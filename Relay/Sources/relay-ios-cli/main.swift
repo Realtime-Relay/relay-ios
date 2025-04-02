@@ -31,6 +31,15 @@ actor RelayService {
     func connect() async throws {
         try await relay.connect()
         print("Successfully connected to NATS server")
+        
+//        // Create the chat stream if it doesn't exist
+//        do {
+//            try await relay.createStream(name: "chat", subjects: ["chat"])
+//            print("Created chat stream")
+//        } catch {
+//            // Ignore error if stream already exists
+//            print("Stream creation error (may already exist): \(error)")
+//        }
     }
     
     func disconnect() async throws {
@@ -124,7 +133,7 @@ class RelayViewModel {
                 isConnected = true
                 
                 // 2. Subscribe to messages
-                try await service.subscribe(to: "chat") { [weak self] (message: ChatMessage) in
+                try await service.subscribe(to: "test") { [weak self] (message: ChatMessage) in
                     Task { @MainActor in
                         self?.receivedMessages.append(message)
                         print("Received: \(message.content) from \(message.sender)")
@@ -132,7 +141,7 @@ class RelayViewModel {
                 }
                 
                 // 3. Get message history
-                try await service.getHistory(from: "chat") { [weak self] (messages: [ChatMessage]) in
+                try await service.getHistory(from: "test") { [weak self] (messages: [ChatMessage]) in
                     Task { @MainActor in
                         self?.historyMessages = messages
                         print("Retrieved \(messages.count) messages from history")
@@ -144,7 +153,7 @@ class RelayViewModel {
                 
                 // 4. Publish test messages
                 let testMessage = "Hello, NATS!"
-                try await service.publishString(testMessage, to: "chat")
+                try await service.publishString(testMessage, to: "test")
                 
                 let chatMessage = ChatMessage(
                     id: UUID().uuidString,
@@ -152,7 +161,7 @@ class RelayViewModel {
                     timestamp: Date(),
                     sender: "User123"
                 )
-                try await service.publish(chatMessage, to: "chat")
+                try await service.publish(chatMessage, to: "test")
                 
                 // 5. Keep test running for 30 seconds
                 try await Task.sleep(nanoseconds: 30_000_000_000)
@@ -189,10 +198,15 @@ class RelayViewModel {
 // MARK: - Example Usage
 let viewModel = RelayViewModel(
     servers: [
-        
+        URL(string: "nats://api.relay-x.io:4221")!,
+        URL(string: "nats://api.relay-x.io:4222")!,
+        URL(string: "nats://api.relay-x.io:4223")!,
+        URL(string: "nats://api.relay-x.io:4224")!,
+        URL(string: "nats://api.relay-x.io:4225")!,
+        URL(string: "nats://api.relay-x.io:4226")!
     ],
-    apiKey: "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJhdWQiOiJOQVRh1Q0psb1M5RnNjRkRobTN3Ym05SmgrRy9NTnBRQ21BTHBoODVFSmJMV0VBaGJvTkl6ZHZkZ0ZTd1QzcjRMU1M5RW56QkNpWWxpWTNnPT0ifQ.k2yssWr8KHbTMztg7QZpfbjJL1ZnLvX79KkSKnn5COaqUKvr0Hh6NNbLW8dwK6PG19FxhTXbGLSzMinSBcAkDA",
-    secret: ""
+    apiKey: "eyJ0eXAiOiJKV16NNbLW8dwK6PG19FxhTXbGLSzMinSBcAkDA", // This is the JWT token
+    secret: "SUAO4" // This is the NKey (secret)
 )
 
 // Start the test
