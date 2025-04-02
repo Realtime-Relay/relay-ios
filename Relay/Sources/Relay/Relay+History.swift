@@ -16,7 +16,7 @@ extension Relay {
         subject: String? = nil,
         limit: Int = 100,
         batchSize: Int = 50
-    ) async throws -> [NatsMessage] {
+    ) async throws -> [Message] {
         // First, get stream info to get the first and last sequence
         let streamInfoRequest = ["stream_name": stream]
         let streamInfoResponse = try await natsConnection.request(
@@ -34,7 +34,7 @@ extension Relay {
         let endSeq = min(streamInfo.state.lastSequence, startSeq + limit - 1)
         
         // Fetch messages in batches
-        var messages: [NatsMessage] = []
+        var messages: [Message] = []
         
         for batchStart in stride(from: startSeq, through: endSeq, by: batchSize) {
             let batchEnd = min(batchStart + batchSize - 1, endSeq)
@@ -64,7 +64,7 @@ extension Relay {
         stream: String,
         sequence: UInt64,
         limit: Int = 100
-    ) async throws -> [NatsMessage] {
+    ) async throws -> [Message] {
         let streamInfoRequest = ["stream_name": stream]
         let streamInfoResponse = try await natsConnection.request(
             try JSONEncoder().encode(streamInfoRequest),
@@ -91,8 +91,8 @@ extension Relay {
         startSeq: Int,
         endSeq: Int,
         subject: String? = nil
-    ) async throws -> [NatsMessage] {
-        var messages: [NatsMessage] = []
+    ) async throws -> [Message] {
+        var messages: [Message] = []
         
         for seq in startSeq...endSeq {
             let request = ["seq": seq]
@@ -107,7 +107,7 @@ extension Relay {
                 continue
             }
             
-            messages.append(response)
+            messages.append(Message(from: response))
         }
         
         return messages

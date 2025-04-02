@@ -133,4 +133,5 @@ public extension Message {
 
 public enum RelayError: Error {
     case invalidPayload
+    case invalidResponse
 }

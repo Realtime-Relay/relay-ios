@@ -1,181 +1,87 @@
 // The Swift Programming Language
 // https://docs.swift.org/swift-book
-import Foundation
-import Nats
 
-/// The main Relay client for interacting with NATS
-public class Relay {
+import Foundation
+@preconcurrency import Nats
+
+public actor Relay {
+    // MARK: - Properties
+    
     let natsConnection: NatsClient
-    private let queue = DispatchQueue(label: "com.relay.nats", qos: .userInitiated)
-    private let actor: RelayActor
+    private let servers: [URL]
+    private let apiKey: String
+    private let secret: String
+    private var isConnected = false
     
-    public init(server: String, apiKey: String, apiSecret: String) {
-        guard let url = URL(string: server) else {
-            fatalError("Invalid server URL")
-        }
+    // MARK: - Initialization
+    
+    /// Initialize a new Relay instance
+    /// - Parameters:
+    ///   - servers: Array of NATS server URLs
+    ///   - apiKey: Your API key for authentication
+    ///   - secret: Your secret key for authentication
+    public init(servers: [URL], apiKey: String, secret: String) {
+        self.servers = servers
+        self.apiKey = apiKey
+        self.secret = secret
+        
+        // Configure NATS connection
         let options = NatsClientOptions()
-            .urls([url])
-            .token(apiSecret)
-            .maxReconnects(5)
+            .urls(servers)
+            .nkey(secret)
+            .token(apiKey)
+//            .maxReconnects(10)
+        
         self.natsConnection = options.build()
-        self.actor = RelayActor(natsConnection: natsConnection)
     }
     
-    // MARK: - Connection Management
-    public func connect(completion: @escaping @Sendable (Error?) -> Void) {
-        queue.async { [weak self] in
-            guard let self = self else {
-                completion(NSError(domain: "Relay", code: -1, userInfo: [NSLocalizedDescriptionKey: "Instance deallocated"]))
-                return
-            }
-            
-            Task {
-                do {
-                    try await self.actor.connect()
-                    await MainActor.run {
-                        completion(nil)
-                    }
-                } catch {
-                    await MainActor.run {
-                        completion(error)
-                    }
-                }
-            }
-        }
+    // MARK: - Public Methods
+    
+    /// Connect to the NATS server
+    public func connect() async throws {
+        try await natsConnection.connect()
+        isConnected = true
     }
     
-    public func disconnect() {
-        queue.async { [weak self] in
-            guard let self = self else { return }
-            Task {
-                try? await self.actor.disconnect()
-            }
-        }
+    /// Disconnect from the NATS server
+    public func disconnect() async throws {
+        try await natsConnection.close()
+        isConnected = false
     }
     
-    // MARK: - Publishing
-    public func publish(subject: String, payload: String, headers: [String: String]? = nil, completion: @escaping @Sendable (Error?) -> Void) {
-        queue.async { [weak self] in
-            guard let self = self else {
-                completion(NSError(domain: "Relay", code: -1, userInfo: [NSLocalizedDescriptionKey: "Instance deallocated"]))
-                return
-            }
-            
-            guard let data = payload.data(using: .utf8) else {
-                completion(NSError(domain: "Relay", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid payload"]))
-                return
-            }
-            
-            Task {
-                do {
-                    try await self.actor.publish(subject: subject, payload: data)
-                    await MainActor.run {
-                        completion(nil)
-                    }
-                } catch {
-                    await MainActor.run {
-                        completion(error)
-                    }
-                }
-            }
-        }
+    /// Publish a message to a subject
+    /// - Parameters:
+    ///   - subject: The subject to publish to
+    ///   - payload: The message payload
+    public func publish(subject: String, payload: Data) async throws {
+        try await natsConnection.publish(payload, subject: NatsConstants.JetStream.Stream.message(stream: subject))
     }
     
-    public func publishJSON<T: Encodable & Sendable>(subject: String, json: T, headers: [String: String]? = nil, completion: @escaping @Sendable (Error?) -> Void) {
-        queue.async { [weak self] in
-            guard let self = self else {
-                completion(NSError(domain: "Relay", code: -1, userInfo: [NSLocalizedDescriptionKey: "Instance deallocated"]))
-                return
-            }
-            
-            Task {
-                do {
-                    let data = try JSONEncoder().encode(json)
-                    try await self.actor.publish(subject: subject, payload: data)
-                    await MainActor.run {
-                        completion(nil)
-                    }
-                } catch {
-                    await MainActor.run {
-                        completion(error)
-                    }
-                }
-            }
-        }
+    /// Subscribe to a subject
+    /// - Parameters:
+    ///   - subject: The subject to subscribe to
+    /// - Returns: A Subscription that can be used to receive messages
+    public func subscribe(subject: String) async throws -> Subscription {
+        let natsSubscription = try await natsConnection.subscribe(subject: NatsConstants.JetStream.Stream.message(stream: subject))
+        return Subscription(from: natsSubscription)
     }
     
-    // MARK: - Subscriptions
-    public func subscribe(subject: String, messageHandler: @escaping @Sendable (Message) -> Void, completion: @escaping @Sendable (Error?) -> Void) {
-        queue.async { [weak self] in
-            guard let self = self else {
-                completion(NSError(domain: "Relay", code: -1, userInfo: [NSLocalizedDescriptionKey: "Instance deallocated"]))
-                return
-            }
-            
-            Task {
-                do {
-                    try await self.actor.subscribe(subject: subject, handler: messageHandler)
-                    await MainActor.run {
-                        completion(nil)
-                    }
-                } catch {
-                    await MainActor.run {
-                        completion(error)
-                    }
-                }
-            }
-        }
+    // MARK: - Convenience Methods
+    
+    /// Publish a string message
+    /// - Parameters:
+    ///   - subject: The subject to publish to
+    ///   - message: The string message to publish
+    public func publish(subject: String, message: String) async throws {
+        try await publish(subject: NatsConstants.JetStream.Stream.message(stream: subject), payload: Data(message.utf8))
     }
     
-    // MARK: - Requests
-    public func request(subject: String, payload: String, timeout: TimeInterval = 5, completion: @escaping @Sendable (Result<Message, Error>) -> Void) {
-        queue.async { [weak self] in
-            guard let self = self else {
-                completion(.failure(NSError(domain: "Relay", code: -1, userInfo: [NSLocalizedDescriptionKey: "Instance deallocated"])))
-                return
-            }
-            
-            guard let data = payload.data(using: .utf8) else {
-                completion(.failure(NSError(domain: "Relay", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid payload"])))
-                return
-            }
-            
-            Task {
-                do {
-                    let response = try await self.actor.request(subject: subject, payload: data, timeout: timeout)
-                    await MainActor.run {
-                        completion(.success(response))
-                    }
-                } catch {
-                    await MainActor.run {
-                        completion(.failure(error))
-                    }
-                }
-            }
-        }
-    }
-    
-    public func requestJSON<T: Encodable & Sendable, R: Decodable & Sendable>(subject: String, json: T, timeout: TimeInterval = 5, completion: @escaping @Sendable (Result<R, Error>) -> Void) {
-        queue.async { [weak self] in
-            guard let self = self else {
-                completion(.failure(NSError(domain: "Relay", code: -1, userInfo: [NSLocalizedDescriptionKey: "Instance deallocated"])))
-                return
-            }
-            
-            Task {
-                do {
-                    let requestData = try JSONEncoder().encode(json)
-                    let response = try await self.actor.request(subject: subject, payload: requestData, timeout: timeout)
-                    let decoded = try JSONDecoder().decode(R.self, from: response.payload ?? Data())
-                    await MainActor.run {
-                        completion(.success(decoded))
-                    }
-                } catch {
-                    await MainActor.run {
-                        completion(.failure(error))
-                    }
-                }
-            }
-        }
+    /// Publish a JSON encodable object
+    /// - Parameters:
+    ///   - subject: The subject to publish to
+    ///   - object: The object to encode and publish
+    public func publish<T: Encodable>(subject: String, object: T) async throws {
+        let data = try JSONEncoder().encode(object)
+        try await publish(subject: NatsConstants.JetStream.Stream.message(stream: subject), payload: data)
     }
 }

@@ -1,5 +1,39 @@
 import Foundation
-import Nats
+@preconcurrency import Nats
+
+/// A subscription to a NATS subject
+@preconcurrency public struct Subscription: AsyncSequence, Sendable {
+    public typealias Element = Message
+    private let natsSubscription: NatsSubscription
+    
+    init(from natsSubscription: NatsSubscription) {
+        self.natsSubscription = natsSubscription
+    }
+    
+    public func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(subscription: self)
+    }
+    
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        private var natsIterator: NatsSubscription.AsyncIterator
+        
+        init(subscription: Subscription) {
+            self.natsIterator = subscription.natsSubscription.makeAsyncIterator()
+        }
+        
+        public mutating func next() async throws -> Message? {
+            guard let natsMessage = try await natsIterator.next() else {
+                return nil
+            }
+            return Message(from: natsMessage)
+        }
+    }
+    
+    /// Unsubscribe from the subject
+    public func unsubscribe() async throws {
+        try await natsSubscription.unsubscribe()
+    }
+}
 
 /// A subscription to a NATS subject
 //public class Subscription {
