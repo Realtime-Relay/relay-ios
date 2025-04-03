@@ -28,7 +28,7 @@ Add Relay to your `Package.swift` file:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/yourusername/relay-ios.git", from: "1.0.0")
+    .package(url: "https://github.com/Realtime-Relay/relay-ios.git", from: "1.0.0")
 ]
 ```
 
@@ -195,11 +195,7 @@ All operations in Relay are thread-safe:
 
 ## 📚 Documentation
 
-For more detailed documentation, check out the [API Reference](docs/API.md).
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+For more detailed documentation, check out the [API Reference](https://pypi.org/project/relayx-py/).
 
 ## 📄 License
 
