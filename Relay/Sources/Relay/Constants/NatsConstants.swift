@@ -10,7 +10,15 @@ public enum NatsConstants {
             }
             
             public static func message(stream: String) -> String {
-                "\(apiPrefix).STREAM.MSG.GET.\(stream)"
+                "\(apiPrefix).STREAM.DIRECT.GET.\(stream)"
+            }
+            
+            public static func consumer(stream: String) -> String {
+                "\(apiPrefix).CONSUMER.CREATE.\(stream)"
+            }
+            
+            public static func consumerNext(stream: String, consumer: String) -> String {
+                "\(apiPrefix).CONSUMER.MSG.NEXT.\(stream).\(consumer)"
             }
         }
     }

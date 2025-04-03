@@ -7,7 +7,13 @@ public struct Message: Sendable {
     public let subject: String
     
     /// The message payload as Data
-    public let payload: Data?
+    public let payload: Data
+    
+    /// The timestamp of the message
+    public let timestamp: Date
+    
+    /// The sequence number of the message
+    public let sequence: UInt64
     
     /// Optional reply subject for request-reply pattern
     public let replySubject: String?
@@ -24,7 +30,9 @@ public struct Message: Sendable {
     /// Initialize a new Message
     public init(
         subject: String,
-        payload: Data? = nil,
+        payload: Data,
+        timestamp: Date,
+        sequence: UInt64,
         replySubject: String? = nil,
         headers: [String: String]? = nil,
         status: Status = .ok,
@@ -32,6 +40,8 @@ public struct Message: Sendable {
     ) {
         self.subject = subject
         self.payload = payload
+        self.timestamp = timestamp
+        self.sequence = sequence
         self.replySubject = replySubject
         self.headers = headers
         self.status = status
@@ -41,9 +51,20 @@ public struct Message: Sendable {
     /// Initialize from a NatsMessage
     init(from natsMessage: NatsMessage) {
         self.subject = natsMessage.subject
-        self.payload = natsMessage.payload
+        self.payload = natsMessage.payload ?? Data()
+        self.timestamp = Date()
+        
+        // Extract sequence from headers if available
+        if let headers = natsMessage.headers,
+           let natsMessageId = try? headers[NatsHeaderName("Nats-Msg-Id")],
+           let sequence = UInt64(String(describing: natsMessageId)) {
+            self.sequence = sequence
+        } else {
+            self.sequence = 0
+        }
+        
         self.replySubject = natsMessage.replySubject
-        self.headers = nil// natsMessage.headers?.dictionary
+        self.headers = nil // natsMessage.headers?.dictionary
         self.status = Status(from: natsMessage.status)
         self.description = natsMessage.description
     }
@@ -86,7 +107,9 @@ public extension Message {
     ) {
         self.init(
             subject: subject,
-            payload: string.data(using: .utf8),
+            payload: string.data(using: .utf8) ?? Data(),
+            timestamp: Date(),
+            sequence: 0,
             replySubject: replySubject,
             headers: headers,
             status: status,
@@ -106,6 +129,8 @@ public extension Message {
         self.init(
             subject: subject,
             payload: try JSONEncoder().encode(json),
+            timestamp: Date(),
+            sequence: 0,
             replySubject: replySubject,
             headers: headers,
             status: status,
@@ -118,18 +143,14 @@ public extension Message {
 public extension Message {
     /// Get the payload as a string
     var string: String? {
-        guard let data = payload else { return nil }
-        return String(data: data, encoding: .utf8)
+        return String(data: payload, encoding: .utf8)
     }
     
     /// Get the payload as a JSON-decoded object
     func json<T: Decodable>() throws -> T {
-        guard let data = payload else {
-            throw RelayError.invalidPayload
-        }
-        return try JSONDecoder().decode(T.self, from: data)
+        return try JSONDecoder().decode(T.self, from: payload)
     }
-} 
+}
 
 public enum RelayError: Error {
     case invalidPayload

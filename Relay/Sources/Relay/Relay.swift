@@ -85,24 +85,30 @@ public actor Relay {
     /// - Parameters:
     ///   - name: Name of the stream
     ///   - subjects: Array of subjects to capture
-//    public func createStream(name: String, subjects: [String]) async throws {
-//        let config = [
-//            "stream_name": name,
-//            "subjects": subjects,
-//            "retention": "workqueue",
-//            "max_consumers": 128,
-//            "max_msgs_per_subject": -1,
-//            "max_msgs": -1,
-//            "max_age": -1,
-//            "max_bytes": -1
-//        ]
-//        
-//        try await natsConnection.request(
-//            try JSONEncoder().encode(config),
-//            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.CREATE.\(name)"
-//        )
-//        print("Created stream: \(name)")
-//    }
+    public func createStream(name: String, subjects: [String]) async throws {
+        let config: [String: Any] = [
+            "name": name,
+            "subjects": subjects,
+            "retention": "workqueue",
+            "max_consumers": -1,
+            "max_msgs": -1,
+            "max_bytes": -1,
+            "max_age": 0,
+            "storage": "memory",
+            "discard": "old"
+        ]
+        
+        let jsonData = try JSONSerialization.data(withJSONObject: config)
+        let response = try await natsConnection.request(
+            jsonData,
+            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.CREATE.\(name)"
+        )
+        
+        if let data = response.payload,
+           let str = String(data: data, encoding: .utf8) {
+            print("Stream creation response: \(str)")
+        }
+    }
     
     /// Disconnect from the NATS server
     public func disconnect() async throws {
@@ -141,7 +147,7 @@ public actor Relay {
     ///   - subject: The subject to publish to
     ///   - message: The string message to publish
     public func publish(subject: String, message: String) async throws -> Bool {
-        try await publish(subject: subject, payload: Data(message.utf8))
+        _ = try await publish(subject: subject, payload: Data(message.utf8))
         return true
     }
     
@@ -151,7 +157,7 @@ public actor Relay {
     ///   - object: The object to encode and publish
     public func publish<T: Encodable>(subject: String, object: T) async throws -> Bool {
         let data = try JSONEncoder().encode(object)
-        try await publish(subject: subject, payload: data)
+        _ = try await publish(subject: subject, payload: data)
         return true
     }
 }

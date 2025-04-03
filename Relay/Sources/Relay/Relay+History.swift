@@ -18,20 +18,37 @@ extension Relay {
         batchSize: Int = 50
     ) async throws -> [Message] {
         // First, get stream info to get the first and last sequence
-        let streamInfoRequest = ["stream_name": stream]
+        let streamInfoRequest: [String: Any] = [
+            "name": stream
+        ]
+        
+        let jsonData = try JSONSerialization.data(withJSONObject: streamInfoRequest)
         let streamInfoResponse = try await natsConnection.request(
-            try JSONEncoder().encode(streamInfoRequest),
-            subject: NatsConstants.JetStream.Stream.info(stream: stream)
+            jsonData,
+            subject: NatsConstants.JetStream.Stream.info(stream: stream),
+            timeout: 5.0
         )
         
-        guard let infoData = streamInfoResponse.payload,
-              let streamInfo = try? JSONDecoder().decode(StreamInfo.self, from: infoData) else {
+        guard let infoData = streamInfoResponse.payload else {
+            print("No payload in stream info response")
+            throw RelayError.invalidResponse
+        }
+        
+        // Try to decode error response first
+        if let errorString = String(data: infoData, encoding: .utf8),
+           errorString.contains("stream not found") {
+            print("Stream '\(stream)' not found")
+            return []
+        }
+        
+        guard let streamInfo = try? JSONDecoder().decode(StreamInfo.self, from: infoData) else {
+            print("Failed to decode stream info response: \(String(data: infoData, encoding: .utf8) ?? "no data")")
             throw RelayError.invalidResponse
         }
         
         // Calculate the sequence range to fetch
-        let startSeq = max(1, streamInfo.state.firstSequence)
-        let endSeq = min(streamInfo.state.lastSequence, startSeq + limit - 1)
+        let startSeq = max(1, streamInfo.state.firstSeq)
+        let endSeq = min(streamInfo.state.lastSeq, startSeq + limit - 1)
         
         // Fetch messages in batches
         var messages: [Message] = []
@@ -65,9 +82,9 @@ extension Relay {
         sequence: UInt64,
         limit: Int = 100
     ) async throws -> [Message] {
-        let streamInfoRequest = ["stream_name": stream]
+        let streamInfoRequest = ["name": stream]
         let streamInfoResponse = try await natsConnection.request(
-            try JSONEncoder().encode(streamInfoRequest),
+            try JSONSerialization.data(withJSONObject: streamInfoRequest),
             subject: NatsConstants.JetStream.Stream.info(stream: stream)
         )
         
@@ -76,7 +93,7 @@ extension Relay {
             throw RelayError.invalidResponse
         }
         
-        let endSeq = min(streamInfo.state.lastSequence, Int(sequence) + limit - 1)
+        let endSeq = min(streamInfo.state.lastSeq, Int(sequence) + limit - 1)
         return try await fetchMessagesInRange(
             stream: stream,
             startSeq: Int(sequence),
@@ -94,20 +111,61 @@ extension Relay {
     ) async throws -> [Message] {
         var messages: [Message] = []
         
-        for seq in startSeq...endSeq {
-            let request = ["seq": seq]
+        // Create a consumer
+        let consumerConfig: [String: Any] = [
+            "stream_name": stream,
+            "deliver_policy": "all",
+            "ack_policy": "explicit",
+            "max_deliver": 1,
+            "filter_subject": subject ?? ">",
+            "num_replicas": 1
+        ]
+        
+        let createRequest: [String: Any] = [
+            "stream_name": stream,
+            "config": consumerConfig
+        ]
+        
+        let jsonData = try JSONSerialization.data(withJSONObject: createRequest)
+        let createResponse = try await natsConnection.request(
+            jsonData,
+            subject: NatsConstants.JetStream.Stream.consumer(stream: stream),
+            timeout: 5.0
+        )
+        
+        if let data = createResponse.payload {
+            print("Consumer creation response: \(String(data: data, encoding: .utf8) ?? "no data")")
             
-            let response = try await natsConnection.request(
-                try JSONEncoder().encode(request),
-                subject: NatsConstants.JetStream.Stream.message(stream: stream)
-            )
-            
-            // Apply subject filter if specified
-            if let subject = subject, response.subject != subject {
-                continue
+            // Parse consumer name from response
+            if let responseDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let name = responseDict["name"] as? String {
+                
+                // Fetch messages using the consumer
+                let batchRequest: [String: Any] = [
+                    "batch": endSeq - startSeq + 1,
+                    "no_wait": true
+                ]
+                
+                let batchData = try JSONSerialization.data(withJSONObject: batchRequest)
+                let response = try await natsConnection.request(
+                    batchData,
+                    subject: NatsConstants.JetStream.Stream.consumerNext(stream: stream, consumer: name),
+                    timeout: 5.0
+                )
+                
+                if let data = response.payload {
+                    print("Batch response: \(String(data: data, encoding: .utf8) ?? "no data")")
+                    messages.append(Message(
+                        subject: response.subject,
+                        payload: response.payload ?? Data(),
+                        timestamp: Date(),
+                        sequence: 0,
+                        replySubject: response.replySubject,
+                        headers: nil,
+                        status: .ok
+                    ))
+                }
             }
-            
-            messages.append(Message(from: response))
         }
         
         return messages
