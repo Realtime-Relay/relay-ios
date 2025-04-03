@@ -1,18 +1,18 @@
-# Relay
+# Realtime
 
-A modern, thread-safe Swift package for NATS messaging in iOS and macOS applications. Relay simplifies NATS communication by handling complex threading operations and providing a clean, Swift-native API.
+A modern, thread-safe Swift package for real-time messaging in iOS and macOS applications. Realtime provides a clean, Swift-native API for real-time communication with support for topics, message history, and automatic reconnection.
 
 ## 🚀 Features
 
 - **Thread-Safe Operations**: All operations are automatically handled on appropriate threads
 - **Automatic Connection Management**: Handles connection lifecycle and reconnection
 - **Main Thread Callbacks**: UI updates are automatically dispatched to the main thread
-- **JSON Support**: Built-in JSON encoding/decoding for Swift types
-- **Request-Reply Pattern**: Support for request-reply messaging pattern
-- **Stream Support**: Create and manage NATS streams
-- **Message History**: Retrieve message history from streams
+- **Topic-Based Messaging**: Publish/subscribe with topic validation
+- **Message History**: Retrieve message history with date filtering
+- **Multiple Message Types**: Support for String, Number, and JSON messages
 - **Error Handling**: Comprehensive error handling with Swift's Result type
 - **Async/Await Support**: Modern concurrency support with async/await
+- **Debug Mode**: Optional debug logging for development
 
 ## 📋 Requirements
 
@@ -24,53 +24,39 @@ A modern, thread-safe Swift package for NATS messaging in iOS and macOS applicat
 
 ### Swift Package Manager
 
-Add Relay to your `Package.swift` file:
+Add Realtime to your `Package.swift` file:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Realtime-Relay/relay-ios.git", from: "1.0.0")
+    .package(url: "https://github.com/Realtime-Relay/realtime-ios.git", from: "1.0.0")
 ]
 ```
 
 ## 🎯 Quick Start
 
-### 1. Initialize Relay
+### 1. Initialize Realtime
 
 ```swift
-import Relay
+import Realtime
 
-// Configure NATS servers
-let servers = [
-    "nats://api.yout-project:4221",
-    "nats://api.yout-project:4222",
-    "nats://api.yout-project:4223"
+// Configure options
+let opts: [String: Any] = [
+    "apiKey": "your-api-key",
+    "secretKey": "your-secret-key",
+    "debug": true // Optional, enables debug logging
 ]
 
-// Create Relay instance
-let relay = Relay(
-    servers: servers,
-    apiKey: "your-api-key",
-    secret: "your-secret"
-)
+// Create Realtime instance
+let realtime = try Realtime(staging: true, opts: opts)
 ```
 
 ### 2. Connect to Server
 
 ```swift
-// Using completion handler
-relay.connect { result in
-    switch result {
-    case .success:
-        print("Connected to NATS server")
-    case .failure(let error):
-        print("Failed to connect: \(error)")
-    }
-}
-
 // Using async/await
 do {
-    try await relay.connect()
-    print("Connected to NATS server")
+    try await realtime.connect()
+    print("Connected to server")
 } catch {
     print("Failed to connect: \(error)")
 }
@@ -80,107 +66,97 @@ do {
 
 ```swift
 // Publish string message
-relay.publish(subject: "test.subject", message: "Hello, NATS!") { result in
-    switch result {
-    case .success:
-        print("Message published successfully")
-    case .failure(let error):
-        print("Failed to publish: \(error)")
-    }
-}
+try await realtime.publish(topic: "chat.room1", message: "Hello, world!")
+
+// Publish number
+try await realtime.publish(topic: "sensor.temperature", message: 25.5)
 
 // Publish JSON object
-struct Message: Codable {
-    let content: String
-    let timestamp: Date
-}
-
-let message = Message(content: "Hello", timestamp: Date())
-relay.publish(subject: "test.subject", object: message) { result in
-    switch result {
-    case .success:
-        print("JSON message published successfully")
-    case .failure(let error):
-        print("Failed to publish JSON: \(error)")
-    }
-}
+let message = ["user": "John", "text": "Hello!"]
+try await realtime.publish(topic: "chat.room1", message: message)
 ```
 
 ### 4. Subscribe to Messages
 
 ```swift
 // Subscribe to string messages
-relay.subscribe(subject: "test.subject") { result in
-    switch result {
-    case .success(let message):
-        print("Received message: \(message)")
-    case .failure(let error):
-        print("Error receiving message: \(error)")
+try await realtime.on(topic: "chat.room1") { message in
+    if let text = message as? String {
+        print("Received message: \(text)")
     }
 }
 
 // Subscribe to JSON messages
-relay.subscribe(subject: "test.subject", type: Message.self) { result in
-    switch result {
-    case .success(let message):
-        print("Received message: \(message.content) at \(message.timestamp)")
-    case .failure(let error):
-        print("Error receiving message: \(error)")
+try await realtime.on(topic: "chat.room1") { message in
+    if let data = message as? [String: Any],
+       let user = data["user"] as? String,
+       let text = data["text"] as? String {
+        print("\(user): \(text)")
     }
 }
 ```
 
-### 5. Request-Reply Pattern
+### 5. Get Message History
 
 ```swift
-// Send request and wait for reply
-relay.request(subject: "service.request", message: "Request data") { result in
-    switch result {
-    case .success(let reply):
-        print("Received reply: \(reply)")
-    case .failure(let error):
-        print("Request failed: \(error)")
-    }
-}
+// Get messages from a specific date
+let startDate = Date().addingTimeInterval(-3600) // Last hour
+let messages = try await realtime.history(
+    topic: "chat.room1",
+    startDate: startDate
+)
+
+// Get messages in a date range
+let endDate = Date()
+let messages = try await realtime.history(
+    topic: "chat.room1",
+    startDate: startDate,
+    endDate: endDate
+)
 ```
 
-### 6. Stream Operations
+### 6. Unsubscribe and Cleanup
 
 ```swift
-// Create a stream
-relay.createStream(name: "my-stream", subjects: ["test.*"]) { result in
-    switch result {
-    case .success:
-        print("Stream created successfully")
-    case .failure(let error):
-        print("Failed to create stream: \(error)")
-    }
-}
+// Unsubscribe from a topic
+try await realtime.off(topic: "chat.room1")
 
-// Get message history
-relay.getMessageHistory(stream: "my-stream", subject: "test.subject") { result in
-    switch result {
-    case .success(let messages):
-        print("Retrieved \(messages.count) messages")
-    case .failure(let error):
-        print("Failed to get history: \(error)")
-    }
-}
+// Close connection
+try await realtime.close()
 ```
 
 ## 🔧 Advanced Usage
 
+### Topic Validation
+
+Topics must:
+- Be non-empty strings
+- Not contain spaces or '*' characters
+- Not be system-reserved topics (CONNECTED, RECONNECT, etc.)
+
+### Message Types
+
+Supported message types:
+- String
+- Number (Int or Double)
+- JSON (Dictionary<String, Any>)
+
 ### Error Handling
 
-Relay provides comprehensive error handling through the `RelayError` enum:
+Realtime provides comprehensive error handling through the `RealtimeError` enum:
 
 ```swift
-public enum RelayError: Error {
+public enum RealtimeError: Error {
+    case invalidPayload
+    case invalidResponse
+    case invalidConfiguration(String)
+    case invalidTopic(String)
+    case invalidMessage(String)
+    case invalidDate(String)
     case connectionFailed(String)
     case publishFailed(String)
     case subscribeFailed(String)
     case requestFailed(String)
-    case invalidMessage(String)
     case streamOperationFailed(String)
     case timeout(String)
 }
@@ -188,7 +164,7 @@ public enum RelayError: Error {
 
 ### Thread Safety
 
-All operations in Relay are thread-safe:
+All operations in Realtime are thread-safe:
 - Network operations run on background threads
 - Callbacks are automatically dispatched to the main thread
 - Internal state is protected by proper synchronization
@@ -199,4 +175,4 @@ For more detailed documentation, check out the [API Reference](https://pypi.org/
 
 ## 📄 License
 
-Relay is available under the MIT license. See the LICENSE file for more info.
+Realtime is available under the MIT license. See the LICENSE file for more info.

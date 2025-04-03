@@ -152,7 +152,11 @@ public extension Message {
     }
 }
 
-public enum RelayError: Error {
-    case invalidPayload
-    case invalidResponse
+/// The status of a message
+public enum MessageStatus {
+    /// The message is OK
+    case ok
+    
+    /// The message has an error
+    case error(String)
 }

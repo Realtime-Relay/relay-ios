@@ -1,22 +1,22 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 5.9
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
 
 let package = Package(
-    name: "Relay",
+    name: "Realtime",
     platforms: [
         .iOS(.v13),
         .macOS(.v13)
     ],
     products: [
         .library(
-            name: "Relay",
-            targets: ["Relay"]
+            name: "Realtime",
+            targets: ["Realtime"]
         ),
         .executable(
-            name: "relay-ios-cli",
-            targets: ["relay-ios-cli"]
+            name: "realtime-cli",
+            targets: ["RealtimeCLI"]
         )
     ],
     dependencies: [
@@ -24,16 +24,18 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "Relay",
-            dependencies: [.product(name: "Nats", package: "nats.swift")]
+            name: "Realtime",
+            dependencies: [
+                .product(name: "Nats", package: "nats.swift")
+            ]
         ),
         .executableTarget(
-            name: "relay-ios-cli",
-            dependencies: ["Relay"]
+            name: "RealtimeCLI",
+            dependencies: ["Realtime"]
         ),
         .testTarget(
-            name: "RelayTests",
-            dependencies: ["Relay"]
+            name: "RealtimeTests",
+            dependencies: ["Realtime"]
         ),
     ]
 )
