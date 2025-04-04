@@ -3,8 +3,10 @@
 
 import Foundation
 @preconcurrency import Nats
+import Dispatch
+//import NatsClient
 
-public actor Realtime {
+@preconcurrency public final class Realtime: @unchecked Sendable {
     // MARK: - Properties
     
     var natsConnection: NatsClient
@@ -23,6 +25,7 @@ public actor Realtime {
     private var isDebug: Bool = false
     private var clientId: String
     private var existingStreams: Set<String> = []
+    private let messageStorage: MessageStorage
     
     // MARK: - Initialization
     
@@ -44,6 +47,7 @@ public actor Realtime {
             .urls(servers)
         
         self.natsConnection = options.build()
+        self.messageStorage = MessageStorage()
     }
     
     deinit {
@@ -122,6 +126,20 @@ public actor Realtime {
         if isDebug {
             print("Connected to NATS server")
         }
+        
+        // Set up connection status monitoring
+        natsConnection.on([.disconnected]) { [weak self] _ in
+            self?.isConnected = false
+            print("🔴 Disconnected from NATS server")
+        }
+        
+        natsConnection.on([.connected]) { [weak self] _ in
+            self?.isConnected = true
+            print("🟢 Connected to NATS server")
+            Task { @Sendable [weak self] in
+                await self?.resendStoredMessages()
+            }
+        }
     }
     
     /// Create a JetStream stream
@@ -183,12 +201,6 @@ public actor Realtime {
         if isDebug {
             print("Disconnected from NATS server")
         }
-        
-        // Clean up credentials file after disconnecting
-        if let path = credentialsPath {
-            try? FileManager.default.removeItem(at: path)
-            credentialsPath = nil
-        }
     }
     
     /// Publish a message to a topic using JetStream
@@ -202,6 +214,22 @@ public actor Realtime {
         
         // Validate topic
         try TopicValidator.validate(topic)
+        
+        // If not connected, store message locally
+        if !isConnected {
+            let finalMessage: [String: Any] = [
+                "client_id": clientId,
+                "id": UUID().uuidString,
+                "room": topic,
+                "message": message,
+                "start": Int(Date().timeIntervalSince1970)
+            ]
+            messageStorage.storeMessage(topic: topic, message: finalMessage)
+            if isDebug {
+                print("💾 Stored message locally (offline): \(finalMessage)")
+            }
+            return true
+        }
         
         // Ensure stream exists
         try await ensureStreamExists(for: topic)
@@ -257,5 +285,35 @@ public actor Realtime {
         }
         
         return Subscription(from: natsSubscription)
+    }
+    
+    private func resendStoredMessages() async {
+        let storedMessages = messageStorage.getStoredMessages()
+        guard !storedMessages.isEmpty else { return }
+        
+        if isDebug {
+            print("📤 Resending \(storedMessages.count) stored messages...")
+        }
+        
+        for storedMessage in storedMessages {
+            do {
+                // Extract the original message from the stored message
+                if let originalMessage = storedMessage.message["message"] {
+                    _ = try await publish(topic: storedMessage.topic, message: originalMessage)
+                    if isDebug {
+                        print("✅ Resent message to topic: \(storedMessage.topic)")
+                    }
+                }
+            } catch {
+                if isDebug {
+                    print("❌ Failed to resend message to topic \(storedMessage.topic): \(error)")
+                }
+                // Keep the message in storage if resend fails
+                continue
+            }
+        }
+        
+        // Clear successfully resent messages
+        messageStorage.clearStoredMessages()
     }
 }

@@ -57,7 +57,7 @@ public struct JSONHistoryHandler<T: Codable & Sendable>: HistoryHandling {
 }
 
 /// A handler for messages that require a response
-public struct RequestHandler<T: Codable & Sendable, R: Codable & Sendable>: Sendable {
+public struct RequestHandler<T: Codable & Sendable, R: Codable & Sendable> {
     private let handler: @Sendable (T) async throws -> R
     private let realtime: Realtime
     

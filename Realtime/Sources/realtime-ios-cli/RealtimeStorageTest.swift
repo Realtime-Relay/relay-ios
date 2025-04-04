@@ -1,16 +1,9 @@
-//
-//  main.swift
-//  Realtime
-//
-//  Created by Shaxzod on 02/04/25.
-//
-
 import Foundation
 import Realtime
 
-struct RealtimeCLI {
-    static func main() async throws {
-        print("Starting Realtime test...")
+struct RealtimeStorageTest {
+    static func run() async throws {
+        print("\n🧪 Starting Offline Storage Test...\n")
         
         // Initialize Realtime with debug mode enabled
         let realtime = try Realtime(staging: false, opts: ["debug": true])
@@ -21,17 +14,18 @@ struct RealtimeCLI {
             secret: "SUABDOOLKL6MUTUMSXHRQFCNAHRYABWGVY7FE7XU5T5RDKC4JWCVOMSJO4"
         )
         
-        print("Connecting to NATS server...")
+        // Connect to NATS first
+        print("\nConnecting to NATS server...")
         try await realtime.connect()
         print("Connected successfully")
         
-        // Create a test stream
-        print("Creating test stream...")
+        // Create test stream
+        print("\nCreating test stream...")
         try await realtime.createStream(name: "test_stream", subjects: ["test.*"])
         print("Stream created successfully")
         
         // Set up subscription
-        print("Setting up subscription...")
+        print("\nSetting up subscription...")
         let subscription = try await realtime.subscribe(topic: "test.room1")
         print("Subscription set up successfully")
         
@@ -57,69 +51,44 @@ struct RealtimeCLI {
             }
         }
         
-        // Publish test messages
-        print("\nPublishing test messages...")
+        // Test 1: Publish while offline
+        print("\nTest 1: Publishing while offline...")
+        try await realtime.disconnect()
+        print("Disconnected from NATS server")
         
-        // Test 1: Simple text message
-        print("\nTest 1: Publishing simple text message...")
-        let textMessage: [String: Any] = [
-            "type": "text",
-            "content": "Hello from JetStream!",
+        let offlineMessage: [String: Any] = [
+            "type": "offline",
+            "content": "This message was sent while offline",
             "timestamp": Date().timeIntervalSince1970
         ]
-        let publishResult1 = try await realtime.publish(topic: "test.room1", message: textMessage)
-        if publishResult1 {
-            print("✅ Text message published successfully")
-        }
         
-        // Test 2: Complex object
-        print("\nTest 2: Publishing complex object...")
-        let complexMessage: [String: Any] = [
-            "type": "complex",
-            "data": [
-                "id": UUID().uuidString,
-                "name": "Test Object",
-                "values": [1, 2, 3, 4, 5],
-                "nested": [
-                    "field1": "value1",
-                    "field2": 42
-                ]
-            ],
-            "timestamp": Date().timeIntervalSince1970
-        ]
-        let publishResult2 = try await realtime.publish(topic: "test.room1", message: complexMessage)
-        if publishResult2 {
-            print("✅ Complex object published successfully")
-        }
+        let offlineResult = try await realtime.publish(topic: "test.room1", message: offlineMessage)
+        print("Message stored offline: \(offlineResult)")
         
-        // Test 3: Multiple messages in quick succession
-        print("\nTest 3: Publishing multiple messages...")
+        // Test 2: Publish multiple messages while offline
+        print("\nTest 2: Publishing multiple messages while offline...")
         for i in 1...3 {
-            let quickMessage: [String: Any] = [
-                "type": "quick",
-                "content": "Quick message \(i)",
+            let multipleMessage: [String: Any] = [
+                "type": "offline_batch",
+                "content": "Offline message \(i)",
                 "timestamp": Date().timeIntervalSince1970
             ]
-            let result = try await realtime.publish(topic: "test.room1", message: quickMessage)
-            if result {
-                print("✅ Quick message \(i) published successfully")
-            }
-            // Small delay between messages
-            try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+            let result = try await realtime.publish(topic: "test.room1", message: multipleMessage)
+            print("Stored offline message \(i): \(result)")
         }
         
-        // Wait for messages to be received
-        print("\nWaiting for messages (30 seconds)...")
-        try await Task.sleep(nanoseconds: 30_000_000_000)
+        // Reconnect and wait for messages to be resent
+        print("\nReconnecting to NATS server...")
+        try await realtime.connect()
+        print("Connected successfully")
+        
+        // Wait for messages to be resent
+        print("\nWaiting for stored messages to be resent (10 seconds)...")
+        try await Task.sleep(nanoseconds: 10_000_000_000)
         
         // Clean up
         print("\nDisconnecting...")
         try await realtime.disconnect()
         print("Disconnected successfully")
     }
-}
-// Run the main function
-//try await RealtimeCLI.main()
-
-try await RealtimeStorageTest.run()
-
+} 
