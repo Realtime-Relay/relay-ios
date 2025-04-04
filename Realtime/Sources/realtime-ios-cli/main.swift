@@ -38,48 +38,82 @@ struct RealtimeCLI {
         // Start a task to handle incoming messages
         Task {
             do {
+                print("Listening for messages...")
                 for try await message in subscription {
                     if let json = try? JSONSerialization.jsonObject(with: message.payload) as? [String: Any],
                        let messageContent = json["message"] {
-                        print("Received message: \(messageContent)")
+                        print("\n📨 Received message:")
+                        print("   Content: \(messageContent)")
+                        if let metadata = json["client_id"] {
+                            print("   From: \(metadata)")
+                        }
+                        if let timestamp = json["start"] {
+                            print("   Timestamp: \(timestamp)")
+                        }
                     }
                 }
             } catch {
-                print("Error receiving messages: \(error)")
+                print("❌ Error receiving messages: \(error)")
             }
         }
         
-        // Publish some test messages
-        print("Publishing test messages...")
+        // Publish test messages
+        print("\nPublishing test messages...")
         
-        // Publish a string message wrapped in a dictionary
-        let stringMessage: [String: Any] = [
+        // Test 1: Simple text message
+        print("\nTest 1: Publishing simple text message...")
+        let textMessage: [String: Any] = [
             "type": "text",
-            "content": "Hello, Realtime!",
+            "content": "Hello from JetStream!",
             "timestamp": Date().timeIntervalSince1970
         ]
-        let publishResult1 = try await realtime.publish(topic: "test.room1", message: stringMessage)
+        let publishResult1 = try await realtime.publish(topic: "test.room1", message: textMessage)
         if publishResult1 {
-            print("Published string message successfully")
+            print("✅ Text message published successfully")
         }
         
-        // Publish a dictionary message
-        let dictMessage: [String: Any] = [
-            "type": "test",
-            "content": "This is a test message",
+        // Test 2: Complex object
+        print("\nTest 2: Publishing complex object...")
+        let complexMessage: [String: Any] = [
+            "type": "complex",
+            "data": [
+                "id": UUID().uuidString,
+                "name": "Test Object",
+                "values": [1, 2, 3, 4, 5],
+                "nested": [
+                    "field1": "value1",
+                    "field2": 42
+                ]
+            ],
             "timestamp": Date().timeIntervalSince1970
         ]
-        let publishResult2 = try await realtime.publish(topic: "test.room1", message: dictMessage)
+        let publishResult2 = try await realtime.publish(topic: "test.room1", message: complexMessage)
         if publishResult2 {
-            print("Published dictionary message successfully")
+            print("✅ Complex object published successfully")
+        }
+        
+        // Test 3: Multiple messages in quick succession
+        print("\nTest 3: Publishing multiple messages...")
+        for i in 1...3 {
+            let quickMessage: [String: Any] = [
+                "type": "quick",
+                "content": "Quick message \(i)",
+                "timestamp": Date().timeIntervalSince1970
+            ]
+            let result = try await realtime.publish(topic: "test.room1", message: quickMessage)
+            if result {
+                print("✅ Quick message \(i) published successfully")
+            }
+            // Small delay between messages
+            try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
         }
         
         // Wait for messages to be received
-        print("Waiting for messages (30 seconds)...")
+        print("\nWaiting for messages (30 seconds)...")
         try await Task.sleep(nanoseconds: 30_000_000_000)
         
         // Clean up
-        print("Disconnecting...")
+        print("\nDisconnecting...")
         try await realtime.disconnect()
         print("Disconnected successfully")
     }

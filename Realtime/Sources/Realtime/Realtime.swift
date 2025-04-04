@@ -191,7 +191,7 @@ public actor Realtime {
         }
     }
     
-    /// Publish a message to a topic
+    /// Publish a message to a topic using JetStream
     /// - Parameters:
     ///   - topic: The topic to publish to
     ///   - message: The message to publish (String, number, or JSON)
@@ -211,7 +211,7 @@ public actor Realtime {
             throw RelayError.invalidPayload
         }
         
-        // Create the final message format
+        // Create the final message format with UTC timestamp and client ID
         let finalMessage: [String: Any] = [
             "client_id": clientId,
             "id": UUID().uuidString,
@@ -221,12 +221,18 @@ public actor Realtime {
         ]
         
         let finalData = try JSONSerialization.data(withJSONObject: finalMessage)
+        
+        // Format topic as: namespace_stream_topic
         let finalTopic = NatsConstants.Topics.formatTopic(topic)
         
+        // Publish directly to the formatted topic
         try await natsConnection.publish(finalData, subject: finalTopic)
         
         if isDebug {
-            print("Published message to topic: \(topic)")
+            print("Published message to topic: \(finalTopic)")
+            if let str = String(data: finalData, encoding: .utf8) {
+                print("Message payload: \(str)")
+            }
         }
         
         return true
