@@ -21,6 +21,7 @@ public actor Realtime {
     private var isConnected = false
     private var credentialsPath: URL?
     private var isDebug: Bool = false
+    private var clientId: String
     
     // MARK: - Initialization
     
@@ -35,6 +36,7 @@ public actor Realtime {
         }
         
         self.isDebug = opts["debug"] as? Bool ?? false
+        self.clientId = UUID().uuidString
         
         // Configure NATS connection
         let options = NatsClientOptions()
@@ -170,52 +172,59 @@ public actor Realtime {
         }
     }
     
-    /// Publish a message to a subject
+    /// Publish a message to a topic
     /// - Parameters:
-    ///   - subject: The subject to publish to
-    ///   - payload: The message payload
-    public func publish(subject: String, payload: Data) async throws -> Bool {
+    ///   - topic: The topic to publish to
+    ///   - message: The message to publish (String, number, or JSON)
+    /// - Throws: TopicValidationError if topic is invalid
+    /// - Throws: RelayError.invalidPayload if message is invalid
+    public func publish(topic: String, message: Any) async throws -> Bool {
         try validateAuth()
-        try await natsConnection.publish(payload, subject: subject)
-        if isDebug {
-            print("Published message to subject: \(subject)")
+        
+        // Validate topic
+        try TopicValidator.validate(topic)
+        
+        // Validate message type
+        if (try? JSONSerialization.data(withJSONObject: message)) == nil {
+            throw RelayError.invalidPayload
         }
+        
+        // Create the final message format
+        let finalMessage: [String: Any] = [
+            "client_id": clientId,
+            "id": UUID().uuidString,
+            "room": topic,
+            "message": message,
+            "start": Int(Date().timeIntervalSince1970)
+        ]
+        
+        let finalData = try JSONSerialization.data(withJSONObject: finalMessage)
+        let finalTopic = NatsConstants.Topics.formatTopic(topic)
+        
+        try await natsConnection.publish(finalData, subject: finalTopic)
+        
+        if isDebug {
+            print("Published message to topic: \(topic)")
+        }
+        
         return true
     }
     
-    /// Subscribe to a subject
+    /// Subscribe to a topic
     /// - Parameters:
-    ///   - subject: The subject to subscribe to
+    ///   - topic: The topic to subscribe to
     /// - Returns: A Subscription that can be used to receive messages
-    public func subscribe(subject: String) async throws -> Subscription {
+    public func subscribe(topic: String) async throws -> Subscription {
         try validateAuth()
-        let natsSubscription = try await natsConnection.subscribe(subject: subject)
+        try TopicValidator.validate(topic)
+        
+        let finalTopic = NatsConstants.Topics.formatTopic(topic)
+        let natsSubscription = try await natsConnection.subscribe(subject: finalTopic)
+        
         if isDebug {
-            print("Subscribed to subject: \(subject)")
+            print("Subscribed to topic: \(topic)")
         }
+        
         return Subscription(from: natsSubscription)
-    }
-    
-    // MARK: - Convenience Methods
-    
-    /// Publish a string message
-    /// - Parameters:
-    ///   - subject: The subject to publish to
-    ///   - message: The string message to publish
-    public func publish(subject: String, message: String) async throws -> Bool {
-        try validateAuth()
-        _ = try await publish(subject: subject, payload: Data(message.utf8))
-        return true
-    }
-    
-    /// Publish a JSON encodable object
-    /// - Parameters:
-    ///   - subject: The subject to publish to
-    ///   - object: The object to encode and publish
-    public func publish<T: Encodable>(subject: String, object: T) async throws -> Bool {
-        try validateAuth()
-        let data = try JSONEncoder().encode(object)
-        _ = try await publish(subject: subject, payload: data)
-        return true
     }
 }
