@@ -22,6 +22,7 @@ public actor Realtime {
     private var credentialsPath: URL?
     private var isDebug: Bool = false
     private var clientId: String
+    private var existingStreams: Set<String> = []
     
     // MARK: - Initialization
     
@@ -153,6 +154,24 @@ public actor Realtime {
                 print("Stream creation response: \(str)")
             }
         }
+        
+        // Add to existing streams
+        existingStreams.insert(name)
+    }
+    
+    /// Ensure a stream exists for the given topic
+    /// - Parameter topic: The topic to ensure a stream exists for
+    private func ensureStreamExists(for topic: String) async throws {
+        // Extract stream name from topic
+        let streamName = "stream_\(topic.replacingOccurrences(of: ".", with: "_"))"
+        
+        // Check if stream already exists
+        if existingStreams.contains(streamName) {
+            return
+        }
+        
+        // Create stream if it doesn't exist
+        try await createStream(name: streamName, subjects: [NatsConstants.Topics.formatTopic(topic)])
     }
     
     /// Disconnect from the NATS server
@@ -183,6 +202,9 @@ public actor Realtime {
         
         // Validate topic
         try TopicValidator.validate(topic)
+        
+        // Ensure stream exists
+        try await ensureStreamExists(for: topic)
         
         // Validate message type
         if (try? JSONSerialization.data(withJSONObject: message)) == nil {
@@ -217,6 +239,9 @@ public actor Realtime {
     public func subscribe(topic: String) async throws -> Subscription {
         try validateAuth()
         try TopicValidator.validate(topic)
+        
+        // Ensure stream exists
+        try await ensureStreamExists(for: topic)
         
         let finalTopic = NatsConstants.Topics.formatTopic(topic)
         let natsSubscription = try await natsConnection.subscribe(subject: finalTopic)
