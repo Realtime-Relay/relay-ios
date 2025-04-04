@@ -151,9 +151,3 @@ public extension Message {
         return try JSONDecoder().decode(T.self, from: payload)
     }
 }
-
-public enum RelayError: Error {
-    case invalidPayload
-    case invalidResponse
-    case invalidCredentials(String)
-}
