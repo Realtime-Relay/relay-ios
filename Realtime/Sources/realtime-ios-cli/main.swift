@@ -11,6 +11,7 @@ import Realtime
 // Message listener implementation
 class TestMessageListener: MessageListener {
     let name: String
+    var receivedMessages: [[String: Any]] = []
     
     init(name: String) {
         self.name = name
@@ -27,11 +28,72 @@ class TestMessageListener: MessageListener {
         if let timestamp = message["start"] {
             print("   Timestamp: \(timestamp)")
         }
+        receivedMessages.append(message)
     }
 }
 
 struct RealtimeCLI {
     static func main() async throws {
+        print("🧪 Starting Realtime Test...")
+        
+        // Test offline message storage
+        print("\n🧪 Testing offline message storage...")
+        try await testOfflineMessageStorage()
+        
+        // Run the original tests
+        try await runOriginalTests()
+    }
+    
+    static func testOfflineMessageStorage() async throws {
+        print("\n📱 Initializing Realtime instance for offline test...")
+        let realtime = try Realtime(staging: false, opts: ["debug": true])
+        
+        // Set authentication
+        try realtime.setAuth(
+            apiKey: "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJhdWQiOiJOQVRTIiwibmFtZSI6IklPUyBEZXYiLCJzdWIiOiJVRFdYRDQ0Q01OSlpGU1NCTlNYU1ZNUUJFVE9JNlpQTkU3VkxGUEhKNk5DVE9WNTNTTkhJV0FaSiIsIm5hdHMiOnsiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJzdWJzIjotMSwicHViIjp7ImRlbnkiOlsiPiJdfSwic3ViIjp7ImRlbnkiOlsiPiJdfSwib3JnX2RhdGEiOnsib3JnYW5pemF0aW9uIjoicmVsYXktaW50ZXJuYWwiLCJwcm9qZWN0IjoiSU9TIERldiJ9LCJpc3N1ZXJfYWNjb3VudCI6IkFDWklKWkNJWFNTVVU1NVlFR01QMjM2TUpJMkNSSVJGRkdJRDRKVlE2V1FZWlVXS08yVTdZNEJCIiwidHlwZSI6InVzZXIiLCJ2ZXJzaW9uIjoyfSwiaXNzIjoiQUNaSUpaQ0lYU1NVVTU1WUVHTVAyMzZNSkkyQ1JJUkZGR0lENEpWUTZXUVlaVVdLTzJVN1k0QkIiLCJpYXQiOjE3NDM1MDMzNDUsImp0aSI6Ilo5SExZMi8xdnh1Q0psb1M5RnNjRkRobTN3Ym05SmgrRy9NTnBRQ21BTHBoODVFSmJMV0VBaGJvTkl6ZHZkZ0ZTd1QzcjRMU1M5RW56QkNpWWxpWTNnPT0ifQ.k2yssWr8KHbTMztg7QZpfbjJL1ZnLvX79KkSKnn5COaqUKvr0Hh6NNbLW8dwK6PG19FxhTXbGLSzMinSBcAkDA",
+            secret: "SUABDOOLKL6MUTUMSXHRQFCNAHRYABWGVY7FE7XU5T5RDKC4JWCVOMSJO4"
+        )
+        
+        // Set up message listener
+        let listener = TestMessageListener(name: "Offline Test")
+        try await realtime.on(topic: "test.offline", listener: listener)
+        
+        // Try to publish messages while offline
+        print("\n📤 Publishing messages while offline...")
+        let offlineMessages = [
+            ["type": "text", "content": "Offline message 1"],
+            ["type": "text", "content": "Offline message 2"],
+            ["type": "text", "content": "Offline message 3"]
+        ]
+        
+        for (index, message) in offlineMessages.enumerated() {
+            let result = try await realtime.publish(topic: "test.offline", message: message)
+            print("✅ Stored offline message \(index + 1): \(result)")
+        }
+        
+        // Now connect and verify messages are sent
+        print("\n🔄 Connecting to send stored messages...")
+        try await realtime.connect()
+        
+        // Wait for messages to be processed
+        print("\n⏳ Waiting for stored messages to be processed (5 seconds)...")
+        try await Task.sleep(nanoseconds: 5_000_000_000)
+        
+        // Verify received messages
+        print("\n📋 Received Messages Count: \(listener.receivedMessages.count)")
+        for (index, message) in listener.receivedMessages.enumerated() {
+            print("\nMessage \(index + 1):")
+            if let content = message["message"] as? [String: Any] {
+                print("   Content: \(content)")
+            }
+        }
+        
+        // Disconnect
+        try await realtime.disconnect()
+        print("\n✅ Offline message storage test completed")
+    }
+    
+    static func runOriginalTests() async throws {
         print("🧪 Starting Realtime Test...")
         
         // Initialize two Realtime instances with debug mode enabled
@@ -58,11 +120,6 @@ struct RealtimeCLI {
         print("🔄 Instance 2: Connecting and retrieving namespace...")
         try await realtime2.connect()
         print("Both instances connected successfully")
-        
-        // Create a test stream
-        print("\nCreating test stream...")
-        try await realtime1.createStream(name: "test_stream", subjects: ["test.*"])
-        print("Stream created successfully")
         
         // Set up message listeners
         print("\nSetting up message listeners...")
@@ -136,8 +193,8 @@ struct RealtimeCLI {
         let message3: [String: Any] = [
             "type": "text",
             "content": "This message should not be received by Instance 1!",
-            "timestamp": Date().timeIntervalSince1970
-        ]
+                "timestamp": Date().timeIntervalSince1970
+            ]
         let result3 = try await realtime2.publish(topic: "test.room1", message: message3)
         if result3 {
             print("✅ Instance 2 message sent")
@@ -181,4 +238,4 @@ struct RealtimeCLI {
 try await RealtimeCLI.main()
 
 // try await RealtimeStorageTest.run()
- 
+

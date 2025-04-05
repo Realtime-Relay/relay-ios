@@ -4,7 +4,6 @@
 import Foundation
 @preconcurrency import Nats
 import Dispatch
-//import NatsClient
 
 /// SDK Topics for internal events
 public enum SDKTopic {
@@ -46,6 +45,10 @@ public protocol MessageListener {
     private var messageListeners: [String: MessageListener] = [:]
     private var subscriptions: [String: NatsSubscription] = [:]
     private var messageTasks: [String: Task<Void, Never>] = [:]
+    
+    private var streamSubjects: [String: Set<String>] = [:]
+    private let streamName: String = "default_stream"
+    private let topicPrefix: String = "relay_stream"
     
     // MARK: - Initialization
     
@@ -534,7 +537,7 @@ public protocol MessageListener {
     /// - Throws: TopicValidationError if topic is invalid
     /// - Throws: RelayError.invalidDate if dates are invalid
     public func history(topic: String, startDate: Date, endDate: Date? = nil) async throws -> [[String: Any]] {
-        try validateAuth()
+        // Validate topic
         try TopicValidator.validate(topic)
         
         // Validate start date
@@ -554,130 +557,112 @@ public protocol MessageListener {
             return []
         }
         
-        // Format the final topic and stream name
+        // Format the final topic
         let finalTopic = NatsConstants.Topics.formatTopic(topic)
-        let streamName = "stream_\(topic.replacingOccurrences(of: ".", with: "_"))"
         
-        // Convert dates to timestamps
-        let startTimestamp = Int(startDate.timeIntervalSince1970)
-        let endTimestamp = endDate.map { Int($0.timeIntervalSince1970) }
+        // Ensure stream exists
+        try await ensureStreamExists()
         
-        var messages: [[String: Any]] = []
+        let consumerName = "history_\(UUID().uuidString)"
         
-        // Create a consumer with delivery policy by start time
+        // Create consumer configuration
+        let streamName = "stream_test_\(topic.replacingOccurrences(of: "test.", with: ""))"
         let consumerConfig: [String: Any] = [
-            "deliver_policy": "all",
-            "ack_policy": "explicit",  // Required for pull mode
-            "max_deliver": 1,
-            "filter_subject": finalTopic,
-            "num_replicas": 1,
-            "max_waiting": 1,  // Only one client will be pulling
-            "max_batch": 100,  // Get up to 100 messages at once
-            "max_expires": 5000000000  // 5 seconds in nanoseconds
-        ]
-        
-        let createRequest: [String: Any] = [
             "stream_name": streamName,
-            "config": consumerConfig
+            "config": [
+                "num_replicas": 1,
+                "name": consumerName,
+                "deliver_policy": "all",
+                "max_batch": 1000,
+                "filter_subject": "relay_stream_test.\(topic.replacingOccurrences(of: "test.", with: ""))",
+                "max_deliver": 1,
+                "max_ack_pending": 20000,
+                "ack_policy": "explicit"
+            ]
         ]
         
         if isDebug {
-            print("Creating consumer with config: \(createRequest)")
+            print("Creating consumer with config:", String(data: try JSONSerialization.data(withJSONObject: consumerConfig), encoding: .utf8) ?? "")
         }
         
-        let jsonData = try JSONSerialization.data(withJSONObject: createRequest)
+        // Create consumer
         let createResponse = try await natsConnection.request(
-            jsonData,
-            subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.CREATE.\(streamName)",
+            try JSONSerialization.data(withJSONObject: consumerConfig),
+            subject: NatsConstants.JetStream.Stream.consumer(stream: streamName),
             timeout: 5.0
         )
         
         if isDebug {
             if let data = createResponse.payload,
                let str = String(data: data, encoding: .utf8) {
-                print("Consumer creation response: \(str)")
+                print("Consumer creation response:", str)
+                
+                // Check for error in response
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let error = json["error"] as? [String: Any] {
+                    print("Error creating consumer:", error)
+                    return []
+                }
             }
         }
         
-        guard let data = createResponse.payload,
-              let responseDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let consumerName = responseDict["name"] as? String else {
-            if isDebug {
-                print("Failed to create consumer or get consumer name")
-            }
-            return []
-        }
+        var messages: [[String: Any]] = []
         
-        if isDebug {
-            print("Created consumer: \(consumerName)")
-        }
-        
-        // Fetch messages using the consumer
+        // Request all messages at once
         let batchRequest: [String: Any] = [
-            "batch": 10,  // Reduced batch size for testing
-            "no_wait": true  // Don't wait for messages if none available
+            "batch": 1000,  // Request a large batch to get all messages
+            "no_wait": true  // Don't wait for new messages
         ]
         
-        let batchData = try JSONSerialization.data(withJSONObject: batchRequest)
-        
-        // Try to fetch messages multiple times
-        for _ in 0..<10 {  // Maximum 10 batches
-            do {
-                let response = try await natsConnection.request(
-                    batchData,
-                    subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.MSG.NEXT.\(streamName).\(consumerName)",
-                    timeout: 1.0  // Reduced timeout since we're not waiting
-                )
-                
-                if isDebug {
-                    if let data = response.payload,
-                       let str = String(data: data, encoding: .utf8) {
-                        print("Message response: \(str)")
-                    }
+        do {
+            let response = try await natsConnection.request(
+                try JSONSerialization.data(withJSONObject: batchRequest),
+                subject: NatsConstants.JetStream.Stream.consumerNext(stream: streamName, consumer: consumerName),
+                timeout: 5.0  // Increased timeout for larger batch
+            )
+            
+            if isDebug {
+                if let data = response.payload,
+                   let str = String(data: data, encoding: .utf8) {
+                    print("Message response:", str)
                 }
+            }
+            
+            if let messageData = response.payload,
+               let messageDict = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any] {
+                messages.append(messageDict)
                 
-                guard let messageData = response.payload,
-                      let messageDict = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any] else {
-                    continue
-                }
-                
-                // Get timestamp from either start or message.timestamp
-                var timestamp: Int?
-                if let start = messageDict["start"] as? Int {
-                    timestamp = start
-                } else if let message = messageDict["message"] as? [String: Any],
-                          let messageTimestamp = message["timestamp"] as? TimeInterval {
-                    timestamp = Int(messageTimestamp)
-                }
-                
-                guard let timestamp = timestamp else {
-                    continue
-                }
-                
-                // Check if message timestamp is within range
-                if timestamp >= startTimestamp && (endTimestamp == nil || timestamp <= endTimestamp!) {
-                    messages.append(messageDict)
-                }
-                
-                // Acknowledge the message
+                // Acknowledge message
                 if let headers = response.headers,
                    let replyTo = try? headers[NatsHeaderName("Nats-Reply-To")]?.description {
                     try await natsConnection.publish(Data(), subject: replyTo)
+                    if isDebug {
+                        print("Acknowledged message")
+                    }
                 }
-                
-            } catch {
-                if isDebug {
-                    print("Error fetching message: \(error)")
-                }
-                break
+            }
+            
+        } catch {
+            if isDebug {
+                print("Error fetching messages:", error)
             }
         }
         
-        // Delete the consumer
-        _ = try await natsConnection.request(
-            Data(),
-            subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.DELETE.\(streamName).\(consumerName)"
-        )
+        // Clean up consumer
+        do {
+            _ = try await natsConnection.request(
+                Data(),
+                subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.DELETE.\(streamName).\(consumerName)",
+                timeout: 5.0
+            )
+            if isDebug {
+                print("Successfully deleted consumer:", consumerName)
+            }
+        } catch {
+            if isDebug {
+                print("Error deleting consumer:", error)
+            }
+        }
         
         if isDebug {
             print("Retrieved \(messages.count) messages")
@@ -756,5 +741,42 @@ public protocol MessageListener {
         
         // Clear pending topics after processing
         pendingTopics.removeAll()
+    }
+    
+    private func ensureStreamExists() async throws {
+        guard isConnected else {
+            throw RelayError.notConnected("Not connected to NATS server")
+        }
+        
+        let streamConfig: [String: Any] = [
+            "name": streamName,
+            "subjects": ["\(topicPrefix).>"],
+            "retention": "limits",
+            "max_consumers": -1,
+            "max_msgs": 1_000_000,
+            "max_bytes": 1_000_000_000,
+            "max_age": 86400_000_000_000,  // 24 hours in nanoseconds
+            "max_msg_size": 1_000_000,
+            "storage": "file",
+            "num_replicas": 1
+        ]
+        
+        let jsonData = try JSONSerialization.data(withJSONObject: streamConfig)
+        
+        // Try to create the stream first
+        let createResponse = try? await natsConnection.request(
+            jsonData,
+            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.CREATE.\(streamName)",
+            timeout: 5.0
+        )
+        
+        if createResponse == nil {
+            // If creation fails, try to update the stream
+            _ = try? await natsConnection.request(
+                jsonData,
+                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.UPDATE.\(streamName)",
+                timeout: 5.0
+            )
+        }
     }
 }

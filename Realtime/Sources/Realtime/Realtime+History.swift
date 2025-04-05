@@ -176,3 +176,124 @@ extension Realtime {
         return messages
     }
 }
+
+
+//
+//public func history(topic: String, minutes: Int = 5) async throws -> [Message] {
+//    try validateAuth()
+//    try TopicValidator.validate(topic)
+//    
+//    guard minutes > 0 else {
+//        throw RelayError.invalidDate("Minutes must be greater than 0")
+//    }
+//    
+//    try await ensureStreamExists()
+//    
+//    let consumerName = "history_\(UUID().uuidString)"
+//    let startTime = Date().addingTimeInterval(-Double(minutes * 60))
+//    
+//    let consumerConfig: [String: Any] = [
+//        "stream_name": streamName,
+//        "config": [
+//            "filter_subject": NatsConstants.Topics.formatTopic(topic),
+//            "deliver_policy": "by_start_time",
+//            "opt_start_time": ISO8601DateFormatter().string(from: startTime),
+//            "ack_policy": "explicit",
+//            "max_deliver": 1,
+//            "num_replicas": 1,
+//            "max_waiting": 1,
+//            "max_batch": 100,
+//            "max_expires": 5000000000
+//        ]
+//    ]
+//    
+//    let jsonData = try JSONSerialization.data(withJSONObject: consumerConfig)
+//    let request = try await natsConnection.request(
+//        jsonData,
+//        subject: NatsConstants.JetStream.Stream.consumer(stream: streamName),
+//        timeout: 5.0
+//    )
+//    
+//    if isDebug {
+//        print("Creating consumer with config:", String(data: jsonData, encoding: .utf8) ?? "")
+//    }
+//    
+//    guard let payload = request.payload,
+//          let response = String(data: payload, encoding: .utf8) else {
+//        throw RelayError.invalidResponse
+//    }
+//    print("Consumer creation response:", response)
+//    
+//    // Request messages in batches
+//    var allMessages: [Message] = []
+//    var hasMore = true
+//    
+//    while hasMore {
+//        let batchRequest: [String: Any] = [
+//            "batch": 100,
+//            "no_wait": true
+//        ]
+//        let batchData = try JSONSerialization.data(withJSONObject: batchRequest)
+//        
+//        let batchResponse = try await natsConnection.request(
+//            batchData,
+//            subject: NatsConstants.JetStream.Stream.consumerNext(stream: streamName, consumer: consumerName),
+//            timeout: 1.0
+//        )
+//        
+//        guard let payload = batchResponse.payload else {
+//            hasMore = false
+//            continue
+//        }
+//        
+//        if let responseStr = String(data: payload, encoding: .utf8) {
+//            print("Batch response:", responseStr)
+//            
+//            if responseStr.contains("no messages") {
+//                hasMore = false
+//            } else {
+//                do {
+//                    if let json = try JSONSerialization.jsonObject(with: payload) as? [String: Any],
+//                       let id = json["id"] as? String,
+//                       let timestamp = json["timestamp"] as? Int64,
+//                       let content = json["content"] as? String,
+//                       let clientId = json["client_id"] as? String {
+//                        
+//                        let message = Message(
+//                            subject: NatsConstants.Topics.formatTopic(topic),
+//                            payload: payload,
+//                            sequence: 0,
+//                            replySubject: batchResponse.replySubject,
+//                            headers: nil,
+//                            status: .ok,
+//                            description: nil,
+//                            id: id,
+//                            timestamp: timestamp,
+//                            content: content,
+//                            clientId: clientId
+//                        )
+//                        
+//                        if Int64(message.timestamp) >= Int64(startTime.timeIntervalSince1970 * 1000) {
+//                            allMessages.append(message)
+//                        }
+//                    }
+//                } catch {
+//                    print("Failed to decode message:", error)
+//                    hasMore = false
+//                }
+//            }
+//        } else {
+//            hasMore = false
+//        }
+//    }
+//    
+//    // Delete the consumer
+//    _ = try? await natsConnection.request(
+//        Data(),
+//        subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.DELETE.\(streamName).\(consumerName)",
+//        timeout: 5.0
+//    )
+//    
+//    print("Retrieved \(allMessages.count) messages")
+//    return allMessages
+//}
