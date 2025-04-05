@@ -155,15 +155,20 @@ extension Realtime {
                 
                 if let data = response.payload {
                     print("Batch response: \(String(data: data, encoding: .utf8) ?? "no data")")
-                    messages.append(Message(
+                    let message = Message(
                         subject: response.subject,
                         payload: response.payload ?? Data(),
-                        timestamp: Date(),
                         sequence: 0,
                         replySubject: response.replySubject,
                         headers: nil,
-                        status: .ok
-                    ))
+                        status: .ok,
+                        description: nil,
+                        id: "",
+                        timestamp: 0,
+                        content: "",
+                        clientId: ""
+                    )
+                    messages.append(message)
                 }
             }
         }

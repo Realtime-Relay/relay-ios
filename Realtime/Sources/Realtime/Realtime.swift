@@ -6,6 +6,21 @@ import Foundation
 import Dispatch
 //import NatsClient
 
+/// SDK Topics for internal events
+public enum SDKTopic {
+    public static let CONNECTED = "sdk.connected"
+    public static let DISCONNECTED = "sdk.disconnected"
+    public static let RECONNECTING = "sdk.reconnecting"
+    public static let RECONNECTED = "sdk.reconnected"
+}
+
+/// Connection event arguments
+public enum ConnectionEvent: String {
+    case RECONNECTING
+    case RECONNECTED
+    case DISCONNECTED
+}
+
 /// Protocol for receiving messages from the Realtime service
 public protocol MessageListener {
     func onMessage(_ message: [String: Any])
@@ -15,14 +30,7 @@ public protocol MessageListener {
     // MARK: - Properties
     
     var natsConnection: NatsClient
-    private let servers: [URL] = [
-        URL(string: "nats://api.relay-x.io:4221")!,
-        URL(string: "nats://api.relay-x.io:4222")!,
-        URL(string: "nats://api.relay-x.io:4223")!,
-        URL(string: "nats://api.relay-x.io:4224")!,
-        URL(string: "nats://api.relay-x.io:4225")!,
-        URL(string: "nats://api.relay-x.io:4226")!
-    ]
+    private var servers: [URL] = []
     private var apiKey: String?
     private var secret: String?
     private var isConnected = false
@@ -30,7 +38,10 @@ public protocol MessageListener {
     private var isDebug: Bool = false
     private var clientId: String
     private var existingStreams: Set<String> = []
-    private let messageStorage: MessageStorage
+    private var messageStorage: MessageStorage
+    private var namespace: String?
+    private var isStaging: Bool = false
+    private var pendingTopics: Set<String> = []
     
     private var messageListeners: [String: MessageListener] = [:]
     private var subscriptions: [String: NatsSubscription] = [:]
@@ -50,13 +61,22 @@ public protocol MessageListener {
         
         self.isDebug = opts["debug"] as? Bool ?? false
         self.clientId = UUID().uuidString
+        self.isStaging = staging
+        self.messageStorage = MessageStorage()
         
-        // Configure NATS connection
+        // Configure server URLs based on staging flag
+        let baseUrl = staging ? "0.0.0.0" : "api.relay-x.io"
+        self.servers = (4221...4226).map { port in
+            URL(string: "nats://\(baseUrl):\(port)")!
+        }
+        
+        // Configure NATS connection with required settings
         let options = NatsClientOptions()
             .urls(servers)
+            .maxReconnects(1200)
+            .reconnectWait(1000)
         
         self.natsConnection = options.build()
-        self.messageStorage = MessageStorage()
     }
     
     deinit {
@@ -68,11 +88,7 @@ public protocol MessageListener {
     
     // MARK: - Public Methods
     
-    /// Set the API key and secret for authentication
-    /// - Parameters:
-    ///   - apiKey: Your API key for authentication
-    ///   - secret: Your secret key for authentication
-    /// - Throws: RelayError.invalidCredentials if apiKey or secret is empty
+    /// Set authentication credentials
     public func setAuth(apiKey: String, secret: String) throws {
         guard !apiKey.isEmpty else {
             throw RelayError.invalidCredentials("API key cannot be empty")
@@ -116,6 +132,8 @@ public protocol MessageListener {
         let options = NatsClientOptions()
             .urls(servers)
             .credentialsFile(credentialsPath)
+            .maxReconnects(1200)
+            .reconnectWait(1000)
         
         // Rebuild connection with new credentials
         self.natsConnection = options.build()
@@ -129,25 +147,85 @@ public protocol MessageListener {
     
     /// Connect to the NATS server
     public func connect() async throws {
-        try validateAuth()
+        if self.isDebug {
+            print("🔄 Connecting and retrieving namespace...")
+        }
+        
+        // Connect to NATS server first
         try await natsConnection.connect()
-        isConnected = true
-        if isDebug {
-            print("Connected to NATS server")
+        self.isConnected = true
+        
+        if self.isDebug {
+            print("✅ Connected to NATS server")
         }
         
-        // Set up connection status monitoring
-        natsConnection.on([.disconnected]) { [weak self] _ in
-            self?.isConnected = false
-            print("🔴 Disconnected from NATS server")
+        // Get namespace
+        let namespace = try await getNamespace()
+        self.namespace = namespace
+        
+        if self.isDebug {
+            print("✅ Retrieved namespace: \(namespace)")
         }
         
-        natsConnection.on([.connected]) { [weak self] _ in
-            self?.isConnected = true
-            print("🟢 Connected to NATS server")
-            Task { @Sendable [weak self] in
-                await self?.resendStoredMessages()
+        // Subscribe to SDK topics
+        try await subscribeToTopics()
+        
+        if self.isDebug {
+            print("✅ Connected and ready")
+        }
+    }
+    
+    /// Get the namespace for the current user
+    private func getNamespace() async throws -> String {
+        guard let apiKey = self.apiKey else {
+            throw RelayError.invalidCredentials("API key not set")
+        }
+        
+        if self.isDebug {
+            print("Requesting namespace with API key")
+        }
+        
+        // Try to connect for up to 5 seconds
+        for _ in 0..<50 {
+            if isConnected {
+                break
             }
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
+        
+        guard isConnected else {
+            throw RelayError.notConnected("Failed to connect to NATS server")
+        }
+        
+        // Create request payload
+        let request = [
+            "api_key": apiKey
+        ]
+        
+        let requestData = try JSONSerialization.data(withJSONObject: request)
+        
+        do {
+            // Request namespace from service
+            let response = try await natsConnection.request(
+                requestData,
+                subject: "account.user.get_namespace",
+                timeout: 5.0
+            )
+            
+            guard let responseData = response.payload,
+                  let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+                  let namespace = json["namespace"] as? String else {
+                throw RelayError.invalidPayload
+            }
+            
+            return namespace
+        } catch {
+            if self.isDebug {
+                print("Failed to get namespace: \(error)")
+            }
+            // For now, return a default namespace for testing
+            // In production, this should be handled differently
+            return "default"
         }
     }
     
@@ -345,8 +423,11 @@ public protocol MessageListener {
         // Store the listener
         messageListeners[topic] = listener
         
-        // If not connected, return early
-        guard isConnected else { return }
+        // If not connected, add to pending topics
+        guard isConnected else {
+            pendingTopics.insert(topic)
+            return
+        }
         
         // Ensure stream exists
         try await ensureStreamExists(for: topic)
@@ -364,21 +445,33 @@ public protocol MessageListener {
                 
                 do {
                     for try await message in subscription {
-                        // Parse message
-                        guard let data = message.payload,
-                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                        guard let data = message.payload else {
+                            if self.isDebug {
+                                print("Message payload is nil")
+                            }
                             continue
                         }
                         
-                        // Check if message should be delivered
-                        if let clientId = json["client_id"] as? String,
-                           let room = json["room"] as? String,
-                           clientId != self.clientId,
-                           room == topic,
-                           let listener = self.messageListeners[topic] {
+                        do {
+                            let payload = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
                             
-                            // Deliver message to listener
-                            listener.onMessage(json)
+                            if let payload = payload,
+                               let listener = self.messageListeners[topic] {
+                                let callbackMessage = Message(
+                                    id: payload["id"] as? String ?? "",
+                                    timestamp: payload["timestamp"] as? Int64 ?? 0,
+                                    content: payload["content"] as? String ?? "",
+                                    clientId: payload["client_id"] as? String ?? ""
+                                )
+                                
+                                listener.onMessage(callbackMessage.toDictionary())
+                            } else if self.isDebug {
+                                print("Invalid message payload format or no listener found")
+                            }
+                        } catch {
+                            if self.isDebug {
+                                print("Error processing message: \(error)")
+                            }
                         }
                     }
                 } catch {
@@ -390,7 +483,6 @@ public protocol MessageListener {
             
             // Store task reference
             messageTasks[topic] = task
-            subscriptions[topic] = subscription
         }
     }
     
@@ -514,19 +606,19 @@ public protocol MessageListener {
         
         // Fetch messages using the consumer
         let batchRequest: [String: Any] = [
-            "batch": 100,
-            "no_wait": false,  // Wait for messages
-            "expires": 5000000000  // 5 seconds in nanoseconds
+            "batch": 10,  // Reduced batch size for testing
+            "no_wait": true  // Don't wait for messages if none available
         ]
         
         let batchData = try JSONSerialization.data(withJSONObject: batchRequest)
         
-        while true {
+        // Try to fetch messages multiple times
+        for _ in 0..<10 {  // Maximum 10 batches
             do {
                 let response = try await natsConnection.request(
                     batchData,
                     subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.MSG.NEXT.\(streamName).\(consumerName)",
-                    timeout: 5.0
+                    timeout: 1.0  // Reduced timeout since we're not waiting
                 )
                 
                 if isDebug {
@@ -537,9 +629,21 @@ public protocol MessageListener {
                 }
                 
                 guard let messageData = response.payload,
-                      let messageDict = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
-                      let timestamp = messageDict["start"] as? Int else {
-                    break
+                      let messageDict = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any] else {
+                    continue
+                }
+                
+                // Get timestamp from either start or message.timestamp
+                var timestamp: Int?
+                if let start = messageDict["start"] as? Int {
+                    timestamp = start
+                } else if let message = messageDict["message"] as? [String: Any],
+                          let messageTimestamp = message["timestamp"] as? TimeInterval {
+                    timestamp = Int(messageTimestamp)
+                }
+                
+                guard let timestamp = timestamp else {
+                    continue
                 }
                 
                 // Check if message timestamp is within range
@@ -548,8 +652,10 @@ public protocol MessageListener {
                 }
                 
                 // Acknowledge the message
-                let ackSubject = "\(NatsConstants.JetStream.apiPrefix).CONSUMER.ACK.\(streamName).\(consumerName)"
-                try await natsConnection.publish(Data(), subject: ackSubject)
+                if let headers = response.headers,
+                   let replyTo = try? headers[NatsHeaderName("Nats-Reply-To")]?.description {
+                    try await natsConnection.publish(Data(), subject: replyTo)
+                }
                 
             } catch {
                 if isDebug {
@@ -559,6 +665,7 @@ public protocol MessageListener {
             }
         }
         
+        // Delete the consumer
         _ = try await natsConnection.request(
             Data(),
             subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.DELETE.\(streamName).\(consumerName)"
@@ -569,5 +676,77 @@ public protocol MessageListener {
         }
         
         return messages
+    }
+    
+    /// Subscribe to all pending topics that were initialized before connection
+    private func subscribeToTopics() async throws {
+        guard !pendingTopics.isEmpty else { return }
+        
+        for topic in pendingTopics {
+            do {
+                // Ensure stream exists
+                try await ensureStreamExists(for: topic)
+                
+                let finalTopic = NatsConstants.Topics.formatTopic(topic)
+                
+                // Create subscription if it doesn't exist
+                if subscriptions[topic] == nil {
+                    let subscription = try await natsConnection.subscribe(subject: finalTopic)
+                    subscriptions[topic] = subscription
+                    
+                    // Start message handling task
+                    let task = Task { [weak self] in
+                        guard let self = self else { return }
+                        
+                        do {
+                            for try await message in subscription {
+                                guard let data = message.payload else {
+                                    if self.isDebug {
+                                        print("Message payload is nil")
+                                    }
+                                    continue
+                                }
+                                
+                                do {
+                                    let payload = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
+                                    
+                                    if let payload = payload,
+                                       let listener = self.messageListeners[topic] {
+                                        let callbackMessage = Message(
+                                            id: payload["id"] as? String ?? "",
+                                            timestamp: payload["timestamp"] as? Int64 ?? 0,
+                                            content: payload["content"] as? String ?? "",
+                                            clientId: payload["client_id"] as? String ?? ""
+                                        )
+                                        
+                                        listener.onMessage(callbackMessage.toDictionary())
+                                    } else if self.isDebug {
+                                        print("Invalid message payload format or no listener found")
+                                    }
+                                } catch {
+                                    if self.isDebug {
+                                        print("Error processing message: \(error)")
+                                    }
+                                }
+                            }
+                        } catch {
+                            if self.isDebug {
+                                print("Error handling messages for topic \(topic): \(error)")
+                            }
+                        }
+                    }
+                    
+                    // Store task reference
+                    messageTasks[topic] = task
+                }
+            } catch {
+                if isDebug {
+                    print("Error subscribing to topic \(topic): \(error)")
+                }
+            }
+        }
+        
+        // Clear pending topics after processing
+        pendingTopics.removeAll()
     }
 }

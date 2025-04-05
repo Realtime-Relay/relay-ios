@@ -9,11 +9,11 @@ public struct Message: Sendable {
     /// The message payload as Data
     public let payload: Data
     
-    /// The timestamp of the message
-    public let timestamp: Date
+    /// The timestamp of the message (Unix timestamp in milliseconds)
+    public let timestamp: Int64
     
     /// The sequence number of the message
-    public let sequence: UInt64
+    public let sequence: UInt64?
     
     /// Optional reply subject for request-reply pattern
     public let replySubject: String?
@@ -27,32 +27,60 @@ public struct Message: Sendable {
     /// Optional status description
     public let description: String?
     
+    /// The message ID
+    public let id: String
+    
+    /// The content of the message
+    public let content: String
+    
+    /// The client ID that sent the message
+    public let clientId: String
+    
     /// Initialize a new Message
     public init(
         subject: String,
-        payload: Data,
-        timestamp: Date,
-        sequence: UInt64,
+        payload: Data = Data(),
+        sequence: UInt64? = nil,
         replySubject: String? = nil,
         headers: [String: String]? = nil,
         status: Status = .ok,
-        description: String? = nil
+        description: String? = nil,
+        id: String = "",
+        timestamp: Int64 = 0,
+        content: String = "",
+        clientId: String = ""
     ) {
         self.subject = subject
         self.payload = payload
-        self.timestamp = timestamp
         self.sequence = sequence
         self.replySubject = replySubject
         self.headers = headers
         self.status = status
         self.description = description
+        self.id = id
+        self.timestamp = timestamp
+        self.content = content
+        self.clientId = clientId
     }
     
     /// Initialize from a NatsMessage
     init(from natsMessage: NatsMessage) {
         self.subject = natsMessage.subject
         self.payload = natsMessage.payload ?? Data()
-        self.timestamp = Date()
+        
+        // Try to parse payload as JSON
+        if let data = natsMessage.payload,
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            self.id = json["id"] as? String ?? ""
+            self.timestamp = json["timestamp"] as? Int64 ?? 0
+            self.content = json["content"] as? String ?? ""
+            self.clientId = json["client_id"] as? String ?? ""
+        } else {
+            self.id = ""
+            self.timestamp = 0
+            self.content = ""
+            self.clientId = ""
+        }
         
         // Extract sequence from headers if available
         if let headers = natsMessage.headers,
@@ -60,13 +88,48 @@ public struct Message: Sendable {
            let sequence = UInt64(String(describing: natsMessageId)) {
             self.sequence = sequence
         } else {
-            self.sequence = 0
+            self.sequence = nil
         }
         
         self.replySubject = natsMessage.replySubject
-        self.headers = nil // natsMessage.headers?.dictionary
-        self.status = Status(from: natsMessage.status)
-        self.description = natsMessage.description
+        self.status = .ok
+        self.description = nil
+        
+        // We don't need to store headers since we only use them for sequence
+        self.headers = nil
+    }
+    
+    /// Initialize with individual fields
+    init(id: String, timestamp: Int64, content: String, clientId: String) {
+        self.subject = ""  // Empty subject for messages created from payload
+        self.id = id
+        self.timestamp = timestamp
+        self.content = content
+        self.clientId = clientId
+        self.replySubject = nil
+        
+        // Create payload from fields
+        self.payload = (try? JSONSerialization.data(withJSONObject: [
+            "id": id,
+            "timestamp": timestamp,
+            "content": content,
+            "client_id": clientId
+        ])) ?? Data()
+        
+        self.sequence = nil
+        self.headers = nil
+        self.status = .ok
+        self.description = nil
+    }
+    
+    /// Convert message to dictionary format
+    func toDictionary() -> [String: Any] {
+        return [
+            "id": id,
+            "timestamp": timestamp,
+            "content": content,
+            "client_id": clientId
+        ]
     }
 }
 
@@ -108,12 +171,15 @@ public extension Message {
         self.init(
             subject: subject,
             payload: string.data(using: .utf8) ?? Data(),
-            timestamp: Date(),
-            sequence: 0,
+            sequence: nil,
             replySubject: replySubject,
             headers: headers,
             status: status,
-            description: description
+            description: description,
+            id: "",
+            timestamp: 0,
+            content: string,
+            clientId: ""
         )
     }
     
@@ -129,12 +195,15 @@ public extension Message {
         self.init(
             subject: subject,
             payload: try JSONEncoder().encode(json),
-            timestamp: Date(),
-            sequence: 0,
+            sequence: nil,
             replySubject: replySubject,
             headers: headers,
             status: status,
-            description: description
+            description: description,
+            id: "",
+            timestamp: 0,
+            content: "",
+            clientId: ""
         )
     }
 }
