@@ -6,6 +6,11 @@ import Foundation
 import Dispatch
 //import NatsClient
 
+/// Protocol for receiving messages from the Realtime service
+public protocol MessageListener {
+    func onMessage(_ message: [String: Any])
+}
+
 @preconcurrency public final class Realtime: @unchecked Sendable {
     // MARK: - Properties
     
@@ -26,6 +31,9 @@ import Dispatch
     private var clientId: String
     private var existingStreams: Set<String> = []
     private let messageStorage: MessageStorage
+    
+    private var messageListeners: [String: MessageListener] = [:]
+    private var subscriptions: [String: NatsSubscription] = [:]
     
     // MARK: - Initialization
     
@@ -315,5 +323,62 @@ import Dispatch
         
         // Clear successfully resent messages
         messageStorage.clearStoredMessages()
+    }
+    
+    /// Subscribe to a topic with a message listener
+    /// - Parameters:
+    ///   - topic: The topic to subscribe to
+    ///   - listener: The message listener interface
+    /// - Throws: TopicValidationError if topic is invalid
+    public func on(topic: String, listener: MessageListener) async throws {
+        try validateAuth()
+        try TopicValidator.validate(topic)
+        
+        // Store the listener
+        messageListeners[topic] = listener
+        
+        // If not connected, return early
+        guard isConnected else { return }
+        
+        // Ensure stream exists
+        try await ensureStreamExists(for: topic)
+        
+        let finalTopic = NatsConstants.Topics.formatTopic(topic)
+        
+        // Create subscription if it doesn't exist
+        if subscriptions[topic] == nil {
+            let subscription = try await natsConnection.subscribe(subject: finalTopic)
+            subscriptions[topic] = subscription
+            
+            // Start message handling task
+            Task { [weak self] in
+                guard let self = self else { return }
+                
+                do {
+                    for try await message in subscription {
+                        // Parse message
+                        guard let data = message.payload,
+                              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                            continue
+                        }
+                        
+                        // Check if message should be delivered
+                        if let clientId = json["client_id"] as? String,
+                           let room = json["room"] as? String,
+                           clientId != self.clientId,
+                           room == topic,
+                           let listener = self.messageListeners[topic] {
+                            
+                            // Deliver message to listener
+                            listener.onMessage(json)
+                        }
+                    }
+                } catch {
+                    if self.isDebug {
+                        print("Error handling messages for topic \(topic): \(error)")
+                    }
+                }
+            }
+        }
     }
 }

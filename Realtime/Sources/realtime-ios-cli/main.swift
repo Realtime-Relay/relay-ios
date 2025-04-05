@@ -8,9 +8,25 @@
 import Foundation
 import Realtime
 
+// Message listener implementation
+class TestMessageListener: MessageListener {
+    func onMessage(_ message: [String: Any]) {
+        print("\n📨 Received message via listener:")
+        if let messageContent = message["message"] {
+            print("   Content: \(messageContent)")
+        }
+        if let clientId = message["client_id"] {
+            print("   From: \(clientId)")
+        }
+        if let timestamp = message["start"] {
+            print("   Timestamp: \(timestamp)")
+        }
+    }
+}
+
 struct RealtimeCLI {
     static func main() async throws {
-        print("Starting Realtime test...")
+        print("🧪 Starting Realtime Test...")
         
         // Initialize Realtime with debug mode enabled
         let realtime = try Realtime(staging: false, opts: ["debug": true])
@@ -21,41 +37,20 @@ struct RealtimeCLI {
             secret: "SUABDOOLKL6MUTUMSXHRQFCNAHRYABWGVY7FE7XU5T5RDKC4JWCVOMSJO4"
         )
         
-        print("Connecting to NATS server...")
+        print("\nConnecting to NATS server...")
         try await realtime.connect()
         print("Connected successfully")
         
         // Create a test stream
-        print("Creating test stream...")
+        print("\nCreating test stream...")
         try await realtime.createStream(name: "test_stream", subjects: ["test.*"])
         print("Stream created successfully")
         
-        // Set up subscription
-        print("Setting up subscription...")
-        let subscription = try await realtime.subscribe(topic: "test.room1")
-        print("Subscription set up successfully")
-        
-        // Start a task to handle incoming messages
-        Task {
-            do {
-                print("Listening for messages...")
-                for try await message in subscription {
-                    if let json = try? JSONSerialization.jsonObject(with: message.payload) as? [String: Any],
-                       let messageContent = json["message"] {
-                        print("\n📨 Received message:")
-                        print("   Content: \(messageContent)")
-                        if let metadata = json["client_id"] {
-                            print("   From: \(metadata)")
-                        }
-                        if let timestamp = json["start"] {
-                            print("   Timestamp: \(timestamp)")
-                        }
-                    }
-                }
-            } catch {
-                print("❌ Error receiving messages: \(error)")
-            }
-        }
+        // Set up message listener
+        print("\nSetting up message listener...")
+        let listener = TestMessageListener()
+        try await realtime.on(topic: "test.room1", listener: listener)
+        print("Message listener set up successfully")
         
         // Publish test messages
         print("\nPublishing test messages...")
@@ -118,8 +113,7 @@ struct RealtimeCLI {
         print("Disconnected successfully")
     }
 }
+
 // Run the main function
 //try await RealtimeCLI.main()
-
-try await RealtimeStorageTest.run()
 
