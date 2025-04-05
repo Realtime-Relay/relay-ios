@@ -1,16 +1,16 @@
-# Relay
+# Realtime iOS SDK
 
-A modern, thread-safe Swift package for NATS messaging in iOS and macOS applications. Relay simplifies NATS communication by handling complex threading operations and providing a clean, Swift-native API.
+A modern, thread-safe Swift package for real-time messaging in iOS and macOS applications. Built on top of NATS, this SDK provides a clean, Swift-native API for real-time communication with support for offline messaging, message history, and more.
 
 ## 🚀 Features
 
-- **Thread-Safe Operations**: All operations are automatically handled on appropriate threads
+- **Real-time Messaging**: Pub/Sub pattern with MessagePack encoding
+- **Offline Support**: Automatic message storage and resend
+- **Message History**: Retrieve past messages with time-based queries
+- **Thread Safety**: All operations are automatically handled on appropriate threads
 - **Automatic Connection Management**: Handles connection lifecycle and reconnection
 - **Main Thread Callbacks**: UI updates are automatically dispatched to the main thread
-- **JSON Support**: Built-in JSON encoding/decoding for Swift types
-- **Request-Reply Pattern**: Support for request-reply messaging pattern
-- **Stream Support**: Create and manage NATS streams
-- **Message History**: Retrieve message history from streams
+- **Multiple Message Types**: Support for strings, JSON, and custom objects
 - **Error Handling**: Comprehensive error handling with Swift's Result type
 - **Async/Await Support**: Modern concurrency support with async/await
 
@@ -24,31 +24,26 @@ A modern, thread-safe Swift package for NATS messaging in iOS and macOS applicat
 
 ### Swift Package Manager
 
-Add Relay to your `Package.swift` file:
+Add Realtime to your `Package.swift` file:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Realtime-Relay/relay-ios.git", from: "1.0.0")
+    .package(url: "https://github.com/your-org/realtime-ios.git", from: "1.0.0")
 ]
 ```
 
 ## 🎯 Quick Start
 
-### 1. Initialize Relay
+### 1. Initialize Realtime
 
 ```swift
-import Relay
+import Realtime
 
-// Configure NATS servers
-let servers = [
-    "nats://api.yout-project:4221",
-    "nats://api.yout-project:4222",
-    "nats://api.yout-project:4223"
-]
+// Initialize with debug mode enabled
+let realtime = try Realtime(staging: false, opts: ["debug": true])
 
-// Create Relay instance
-let relay = Relay(
-    servers: servers,
+// Set authentication
+try realtime.setAuth(
     apiKey: "your-api-key",
     secret: "your-secret"
 )
@@ -57,146 +52,133 @@ let relay = Relay(
 ### 2. Connect to Server
 
 ```swift
-// Using completion handler
-relay.connect { result in
-    switch result {
-    case .success:
-        print("Connected to NATS server")
-    case .failure(let error):
-        print("Failed to connect: \(error)")
-    }
-}
-
 // Using async/await
 do {
-    try await relay.connect()
-    print("Connected to NATS server")
+    try await realtime.connect()
+    print("Connected to Realtime server")
 } catch {
     print("Failed to connect: \(error)")
 }
 ```
 
-### 3. Publish Messages
+### 3. Publishing Messages
+
+The SDK supports multiple message types:
 
 ```swift
-// Publish string message
-relay.publish(subject: "test.subject", message: "Hello, NATS!") { result in
-    switch result {
-    case .success:
-        print("Message published successfully")
-    case .failure(let error):
-        print("Failed to publish: \(error)")
-    }
-}
+// 1. String Message
+try await realtime.publish(topic: "test.topic", message: "Hello World!")
 
-// Publish JSON object
-struct Message: Codable {
+// 2. Dictionary Message
+let dictMessage = [
+    "type": "text",
+    "content": "Hello from dictionary!",
+    "timestamp": Date().timeIntervalSince1970
+]
+try await realtime.publish(topic: "test.topic", message: dictMessage)
+
+// 3. Custom Object
+struct MyMessage: Codable {
     let content: String
     let timestamp: Date
 }
-
-let message = Message(content: "Hello", timestamp: Date())
-relay.publish(subject: "test.subject", object: message) { result in
-    switch result {
-    case .success:
-        print("JSON message published successfully")
-    case .failure(let error):
-        print("Failed to publish JSON: \(error)")
-    }
-}
+let customMessage = MyMessage(content: "Hello from custom object!", timestamp: Date())
+try await realtime.publish(topic: "test.topic", message: customMessage)
 ```
 
-### 4. Subscribe to Messages
+### 4. Subscribing to Messages
 
 ```swift
-// Subscribe to string messages
-relay.subscribe(subject: "test.subject") { result in
-    switch result {
-    case .success(let message):
+// Create a message listener
+class MyMessageListener: MessageListener {
+    func onMessage(_ message: [String: Any]) {
         print("Received message: \(message)")
-    case .failure(let error):
-        print("Error receiving message: \(error)")
     }
 }
 
-// Subscribe to JSON messages
-relay.subscribe(subject: "test.subject", type: Message.self) { result in
-    switch result {
-    case .success(let message):
-        print("Received message: \(message.content) at \(message.timestamp)")
-    case .failure(let error):
-        print("Error receiving message: \(error)")
-    }
-}
+// Subscribe to a topic
+let listener = MyMessageListener()
+try await realtime.on(topic: "test.topic", listener: listener)
 ```
 
-### 5. Request-Reply Pattern
+### 5. Retrieving Message History
 
 ```swift
-// Send request and wait for reply
-relay.request(subject: "service.request", message: "Request data") { result in
-    switch result {
-    case .success(let reply):
-        print("Received reply: \(reply)")
-    case .failure(let error):
-        print("Request failed: \(error)")
-    }
-}
+// Get messages from the last 5 minutes
+let startDate = Date().addingTimeInterval(-5 * 60)
+let history = try await realtime.history(topic: "test.topic", startDate: startDate)
+print("Message history: \(history)")
 ```
 
-### 6. Stream Operations
+### 6. Unsubscribing from Topics
 
 ```swift
-// Create a stream
-relay.createStream(name: "my-stream", subjects: ["test.*"]) { result in
-    switch result {
-    case .success:
-        print("Stream created successfully")
-    case .failure(let error):
-        print("Failed to create stream: \(error)")
-    }
-}
-
-// Get message history
-relay.getMessageHistory(stream: "my-stream", subject: "test.subject") { result in
-    switch result {
-    case .success(let messages):
-        print("Retrieved \(messages.count) messages")
-    case .failure(let error):
-        print("Failed to get history: \(error)")
-    }
+// Unsubscribe from a topic
+let unsubscribed = try await realtime.off(topic: "test.topic")
+if unsubscribed {
+    print("Successfully unsubscribed")
 }
 ```
 
 ## 🔧 Advanced Usage
 
-### Error Handling
+### Offline Message Handling
 
-Relay provides comprehensive error handling through the `RelayError` enum:
+Messages are automatically stored when offline and resent when reconnected:
 
 ```swift
-public enum RelayError: Error {
-    case connectionFailed(String)
-    case publishFailed(String)
-    case subscribeFailed(String)
-    case requestFailed(String)
-    case invalidMessage(String)
-    case streamOperationFailed(String)
-    case timeout(String)
+// Publish while offline
+try await realtime.publish(topic: "test.topic", message: "Offline message")
+
+// Messages will be automatically resent when connection is restored
+```
+
+### Error Handling
+
+The SDK provides comprehensive error handling:
+
+```swift
+do {
+    try await realtime.publish(topic: "test.topic", message: "Hello")
+} catch RelayError.notConnected(let message) {
+    print("Connection error: \(message)")
+} catch RelayError.invalidPayload(let message) {
+    print("Invalid message: \(message)")
+} catch {
+    print("Unexpected error: \(error)")
 }
 ```
 
-### Thread Safety
+### Debug Mode
 
-All operations in Relay are thread-safe:
-- Network operations run on background threads
-- Callbacks are automatically dispatched to the main thread
-- Internal state is protected by proper synchronization
+Enable debug mode for detailed logging:
 
-## 📚 Documentation
+```swift
+let realtime = try Realtime(staging: false, opts: ["debug": true])
+```
 
-For more detailed documentation, check out the [API Reference](https://pypi.org/project/relayx-py/).
+## 📚 Best Practices
+
+1. **Message Types**
+   - Use strings for simple messages
+   - Use dictionaries for structured data
+   - Use custom objects for type-safe messages
+
+2. **Connection Management**
+   - Always check connection status before publishing
+   - Handle reconnection events appropriately
+   - Clean up subscriptions when no longer needed
+
+3. **Error Handling**
+   - Implement proper error handling for all operations
+   - Use debug mode during development
+   - Log errors appropriately in production
+
+4. **Memory Management**
+   - Unsubscribe from topics when no longer needed
+   - Remove message listeners when done
+   - Handle connection cleanup in deinit
 
 ## 📄 License
 
-Relay is available under the MIT license. See the LICENSE file for more info.
+Realtime iOS SDK is available under the MIT license. See the LICENSE file for more info.
