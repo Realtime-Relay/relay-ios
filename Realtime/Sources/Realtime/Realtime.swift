@@ -4,6 +4,7 @@
 import Foundation
 @preconcurrency import Nats
 import Dispatch
+import SwiftMsgpack
 
 /// SDK Topics for internal events
 public enum SDKTopic {
@@ -220,7 +221,7 @@ public protocol MessageListener {
             )
             
             guard let responseData = response.payload else {
-                throw RelayError.invalidPayload
+                throw RelayError.invalidPayload("Response payload is missing")
             }
             
             if self.isDebug {
@@ -232,7 +233,7 @@ public protocol MessageListener {
             guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
                   let data = json["data"] as? [String: Any],
                   let namespace = data["namespace"] as? String else {
-                throw RelayError.invalidPayload
+                throw RelayError.invalidPayload("Invalid response format or missing namespace")
             }
             
             if namespace.isEmpty {
@@ -390,13 +391,28 @@ public protocol MessageListener {
         // Validate topic
         try TopicValidator.validate(topic)
         
+        // Encode the message with MessagePack
+        let encoder = MsgPackEncoder()
+        let encodedMessage: Data
+        do {
+            if let jsonData = try? JSONSerialization.data(withJSONObject: message) {
+                encodedMessage = try encoder.encode(jsonData)
+            } else if let stringMessage = message as? String {
+                encodedMessage = try encoder.encode(stringMessage)
+            } else {
+                throw RelayError.invalidPayload("Message must be a valid JSON object or string")
+            }
+        } catch {
+            throw RelayError.invalidPayload("Failed to encode message with MessagePack: \(error)")
+        }
+        
         // If not connected, store message locally
         if !isConnected {
             let finalMessage: [String: Any] = [
                 "client_id": clientId,
                 "id": UUID().uuidString,
                 "room": topic,
-                "message": message,
+                "message": encodedMessage.base64EncodedString(),
                 "start": Int(Date().timeIntervalSince1970)
             ]
             messageStorage.storeMessage(topic: topic, message: finalMessage)
@@ -418,17 +434,12 @@ public protocol MessageListener {
         // Ensure stream exists
         try await ensureStreamExists(for: topic)
         
-        // Validate message type
-        if (try? JSONSerialization.data(withJSONObject: message)) == nil {
-            throw RelayError.invalidPayload
-        }
-        
-        // Create the final message format with UTC timestamp and client ID
+        // Create the final message format
         let finalMessage: [String: Any] = [
             "client_id": clientId,
             "id": UUID().uuidString,
             "room": topic,
-            "message": message,
+            "message": encodedMessage.base64EncodedString(),
             "start": Int(Date().timeIntervalSince1970)
         ]
         
@@ -566,20 +577,83 @@ public protocol MessageListener {
                         }
                         
                         do {
-                            let payload = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
+                            // Parse the JSON wrapper
+                            guard let payload = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                                  let listener = self.messageListeners[topic] else {
+                                if self.isDebug {
+                                    print("Invalid message format or no listener found")
+                                }
+                                continue
+                            }
                             
-                            if let payload = payload,
-                               let listener = self.messageListeners[topic] {
-                                let callbackMessage = Message(
-                                    id: payload["id"] as? String ?? "",
-                                    timestamp: payload["timestamp"] as? Int64 ?? 0,
-                                    content: payload["content"] as? String ?? "",
-                                    clientId: payload["client_id"] as? String ?? ""
-                                )
+                            // Extract and decode the MessagePack content
+                            guard let base64Message = payload["message"] as? String,
+                                  let messageData = Data(base64Encoded: base64Message) else {
+                                if self.isDebug {
+                                    print("Invalid message format: missing or invalid message content")
+                                }
+                                continue
+                            }
+                            
+                            // Decode the MessagePack data
+                            let decoder = MsgPackDecoder()
+                            let messageContent: Any
+                            
+                            do {
+                                // First try to decode as JSON data
+                                if let jsonData = try? decoder.decode(Data.self, from: messageData),
+                                   let jsonContent = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                                    // If we have a content field, try to decode it from base64
+                                    if let base64Content = jsonContent["content"] as? String,
+                                       let contentData = Data(base64Encoded: base64Content),
+                                       let decodedData = try? decoder.decode(Data.self, from: contentData),
+                                       let decodedContent = try? JSONSerialization.jsonObject(with: decodedData) {
+                                        // Create final message with decoded content
+                                        var finalMessage = jsonContent
+                                        finalMessage["content"] = decodedContent
+                                        messageContent = finalMessage
+                                    } else {
+                                        messageContent = jsonContent
+                                    }
+                                }
+                                // Then try as a string
+                                else if let stringContent = try? decoder.decode(String.self, from: messageData) {
+                                    messageContent = stringContent
+                                }
+                                else {
+                                    throw RelayError.invalidPayload("Unknown MessagePack content type")
+                                }
+                            } catch {
+                                if self.isDebug {
+                                    print("Failed to decode MessagePack content: \(error)")
+                                }
+                                continue
+                            }
+                            
+                            // Create the final message dictionary
+                            let messageDict: [String: Any] = [
+                                "id": payload["id"] as? String ?? "",
+                                "client_id": payload["client_id"] as? String ?? "",
+                                "timestamp": payload["start"] as? Int ?? 0,
+                                "message": messageContent
+                            ]
+                            
+                            // Notify the listener
+                            listener.onMessage(messageDict)
+                            
+                            if self.isDebug {
+                                print("\n📨 [\(topic)] Received message via listener:")
+                                print("   From: \(messageDict["client_id"] ?? "unknown")")
+                                print("   Content: \(messageContent)")
                                 
-                                listener.onMessage(callbackMessage.toDictionary())
-                            } else if self.isDebug {
-                                print("Invalid message payload format or no listener found")
+                                if let content = messageContent as? [String: Any] {
+                                    print("\n📦 Decoded Message Content:")
+                                    print("   Type: \(content["type"] ?? "unknown")")
+                                    print("   Content: \(content["content"] ?? "none")")
+                                    if let timestamp = content["timestamp"] {
+                                        print("   Timestamp: \(timestamp)")
+                                    }
+                                }
                             }
                         } catch {
                             if self.isDebug {
@@ -853,20 +927,83 @@ public protocol MessageListener {
                                 }
                                 
                                 do {
-                                    let payload = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
+                                    // Parse the JSON wrapper
+                                    guard let payload = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+                                          let listener = self.messageListeners[topic] else {
+                                        if self.isDebug {
+                                            print("Invalid message format or no listener found")
+                                        }
+                                        continue
+                                    }
                                     
-                                    if let payload = payload,
-                                       let listener = self.messageListeners[topic] {
-                                        let callbackMessage = Message(
-                                            id: payload["id"] as? String ?? "",
-                                            timestamp: payload["timestamp"] as? Int64 ?? 0,
-                                            content: payload["content"] as? String ?? "",
-                                            clientId: payload["client_id"] as? String ?? ""
-                                        )
+                                    // Extract and decode the MessagePack content
+                                    guard let base64Message = payload["message"] as? String,
+                                          let messageData = Data(base64Encoded: base64Message) else {
+                                        if self.isDebug {
+                                            print("Invalid message format: missing or invalid message content")
+                                        }
+                                        continue
+                                    }
+                                    
+                                    // Decode the MessagePack data
+                                    let decoder = MsgPackDecoder()
+                                    let messageContent: Any
+                                    
+                                    do {
+                                        // First try to decode as JSON data
+                                        if let jsonData = try? decoder.decode(Data.self, from: messageData),
+                                           let jsonContent = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                                            // If we have a content field, try to decode it from base64
+                                            if let base64Content = jsonContent["content"] as? String,
+                                               let contentData = Data(base64Encoded: base64Content),
+                                               let decodedData = try? decoder.decode(Data.self, from: contentData),
+                                               let decodedContent = try? JSONSerialization.jsonObject(with: decodedData) {
+                                                // Create final message with decoded content
+                                                var finalMessage = jsonContent
+                                                finalMessage["content"] = decodedContent
+                                                messageContent = finalMessage
+                                            } else {
+                                                messageContent = jsonContent
+                                            }
+                                        }
+                                        // Then try as a string
+                                        else if let stringContent = try? decoder.decode(String.self, from: messageData) {
+                                            messageContent = stringContent
+                                        }
+                                        else {
+                                            throw RelayError.invalidPayload("Unknown MessagePack content type")
+                                        }
+                                    } catch {
+                                        if self.isDebug {
+                                            print("Failed to decode MessagePack content: \(error)")
+                                        }
+                                        continue
+                                    }
+                                    
+                                    // Create the final message dictionary
+                                    let messageDict: [String: Any] = [
+                                        "id": payload["id"] as? String ?? "",
+                                        "client_id": payload["client_id"] as? String ?? "",
+                                        "timestamp": payload["start"] as? Int ?? 0,
+                                        "message": messageContent
+                                    ]
+                                    
+                                    // Notify the listener
+                                    listener.onMessage(messageDict)
+                                    
+                                    if self.isDebug {
+                                        print("\n📨 [\(topic)] Received message via listener:")
+                                        print("   From: \(messageDict["client_id"] ?? "unknown")")
+                                        print("   Content: \(messageContent)")
                                         
-                                        listener.onMessage(callbackMessage.toDictionary())
-                                    } else if self.isDebug {
-                                        print("Invalid message payload format or no listener found")
+                                        if let content = messageContent as? [String: Any] {
+                                            print("\n📦 Decoded Message Content:")
+                                            print("   Type: \(content["type"] ?? "unknown")")
+                                            print("   Content: \(content["content"] ?? "none")")
+                                            if let timestamp = content["timestamp"] {
+                                                print("   Timestamp: \(timestamp)")
+                                            }
+                                        }
                                     }
                                 } catch {
                                     if self.isDebug {

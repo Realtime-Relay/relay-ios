@@ -1,10 +1,17 @@
+//
+//  File.swift
+//  Relay
+//
+//  Created by Shaxzod on 02/04/25.
+//
+
 import Foundation
 
 public enum RelayError: LocalizedError {
     case invalidCredentials(String)
     case invalidResponse
     case invalidOptions(String)
-    case invalidPayload
+    case invalidPayload(String)
     case notConnected(String)
     case invalidDate(String)
     case invalidNamespace(String)
@@ -17,8 +24,8 @@ public enum RelayError: LocalizedError {
             return "Invalid response from server"
         case .invalidOptions(let message):
             return "Invalid options: \(message)"
-        case .invalidPayload:
-            return "Invalid message payload"
+        case .invalidPayload(let message):
+            return "Invalid message payload: \(message)"
         case .notConnected(let message):
             return "Not connected: \(message)"
         case .invalidDate(let message):

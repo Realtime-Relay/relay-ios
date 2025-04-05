@@ -7,7 +7,7 @@ let package = Package(
     name: "Realtime",
     platforms: [
         .macOS(.v13),
-        .iOS(.v16)
+        .iOS(.v13)
     ],
     products: [
         .library(
@@ -19,12 +19,14 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/nats-io/nats.swift.git", from: "0.4.0"),
+        .package(url: "https://github.com/nnabeyang/swift-msgpack", from: "0.7.0"),
     ],
     targets: [
         .target(
             name: "Realtime",
             dependencies: [
-                .product(name: "Nats", package: "nats.swift")
+                .product(name: "Nats", package: "nats.swift"),
+                .product(name: "SwiftMsgpack", package: "swift-msgpack")
             ]),
         .executableTarget(
             name: "realtime-ios-cli",

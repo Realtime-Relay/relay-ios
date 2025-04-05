@@ -1,3 +1,11 @@
+//
+//  File.swift
+//  Relay
+//
+//  Created by Shaxzod on 02/04/25.
+//
+
+
 import Foundation
 import Nats
 
@@ -207,7 +215,6 @@ public extension Message {
         )
     }
 }
-
 // MARK: - Convenience Accessors
 public extension Message {
     /// Get the payload as a string
@@ -220,3 +227,4 @@ public extension Message {
         return try JSONDecoder().decode(T.self, from: payload)
     }
 }
+
