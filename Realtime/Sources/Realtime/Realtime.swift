@@ -464,51 +464,108 @@ public protocol MessageListener {
         
         var messages: [[String: Any]] = []
         
-        // Create a request to get stream info
-        let streamInfoResponse = try await natsConnection.request(
-            Data(),
-            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.INFO.\(streamName)"
+        // Create a consumer with delivery policy by start time
+        let consumerConfig: [String: Any] = [
+            "deliver_policy": "all",
+            "ack_policy": "explicit",  // Required for pull mode
+            "max_deliver": 1,
+            "filter_subject": finalTopic,
+            "num_replicas": 1,
+            "max_waiting": 1,  // Only one client will be pulling
+            "max_batch": 100,  // Get up to 100 messages at once
+            "max_expires": 5000000000  // 5 seconds in nanoseconds
+        ]
+        
+        let createRequest: [String: Any] = [
+            "stream_name": streamName,
+            "config": consumerConfig
+        ]
+        
+        if isDebug {
+            print("Creating consumer with config: \(createRequest)")
+        }
+        
+        let jsonData = try JSONSerialization.data(withJSONObject: createRequest)
+        let createResponse = try await natsConnection.request(
+            jsonData,
+            subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.CREATE.\(streamName)",
+            timeout: 5.0
         )
         
-        guard let streamInfoData = streamInfoResponse.payload,
-              let streamInfo = try? JSONSerialization.jsonObject(with: streamInfoData) as? [String: Any],
-              let state = streamInfo["state"] as? [String: Any],
-              let lastSeq = state["last_seq"] as? Int else {
+        if isDebug {
+            if let data = createResponse.payload,
+               let str = String(data: data, encoding: .utf8) {
+                print("Consumer creation response: \(str)")
+            }
+        }
+        
+        guard let data = createResponse.payload,
+              let responseDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let consumerName = responseDict["name"] as? String else {
+            if isDebug {
+                print("Failed to create consumer or get consumer name")
+            }
             return []
         }
         
-        // Request messages in batches
-        var currentSeq = 1
-        while currentSeq <= lastSeq {
-            let requestConfig: [String: Any] = [
-                "seq": currentSeq,
-                "batch": 10,
-                "no_wait": true
-            ]
-            
-            let response = try await natsConnection.request(
-                try JSONSerialization.data(withJSONObject: requestConfig),
-                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.MSG.GET.\(streamName)"
-            )
-            
-            if let data = response.payload,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let message = json["message"] as? [String: Any],
-               let subject = message["subject"] as? String,
-               subject == finalTopic,
-               let payload = message["data"] as? String,
-               let payloadData = Data(base64Encoded: payload),
-               let messageJson = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] {
+        if isDebug {
+            print("Created consumer: \(consumerName)")
+        }
+        
+        // Fetch messages using the consumer
+        let batchRequest: [String: Any] = [
+            "batch": 100,
+            "no_wait": false,  // Wait for messages
+            "expires": 5000000000  // 5 seconds in nanoseconds
+        ]
+        
+        let batchData = try JSONSerialization.data(withJSONObject: batchRequest)
+        
+        while true {
+            do {
+                let response = try await natsConnection.request(
+                    batchData,
+                    subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.MSG.NEXT.\(streamName).\(consumerName)",
+                    timeout: 5.0
+                )
                 
-                // Check if message timestamp is within range
-                if let timestamp = messageJson["start"] as? Int {
-                    if timestamp >= startTimestamp && (endTimestamp == nil || timestamp <= endTimestamp!) {
-                        messages.append(messageJson)
+                if isDebug {
+                    if let data = response.payload,
+                       let str = String(data: data, encoding: .utf8) {
+                        print("Message response: \(str)")
                     }
                 }
+                
+                guard let messageData = response.payload,
+                      let messageDict = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
+                      let timestamp = messageDict["start"] as? Int else {
+                    break
+                }
+                
+                // Check if message timestamp is within range
+                if timestamp >= startTimestamp && (endTimestamp == nil || timestamp <= endTimestamp!) {
+                    messages.append(messageDict)
+                }
+                
+                // Acknowledge the message
+                let ackSubject = "\(NatsConstants.JetStream.apiPrefix).CONSUMER.ACK.\(streamName).\(consumerName)"
+                try await natsConnection.publish(Data(), subject: ackSubject)
+                
+            } catch {
+                if isDebug {
+                    print("Error fetching message: \(error)")
+                }
+                break
             }
-            
-            currentSeq += 1
+        }
+        
+        _ = try await natsConnection.request(
+            Data(),
+            subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.DELETE.\(streamName).\(consumerName)"
+        )
+        
+        if isDebug {
+            print("Retrieved \(messages.count) messages")
         }
         
         return messages
