@@ -211,17 +211,31 @@ public protocol MessageListener {
         let requestData = try JSONSerialization.data(withJSONObject: request)
         
         do {
-            // Request namespace from service
+            // Request namespace from service with correct subject
             let response = try await natsConnection.request(
                 requestData,
-                subject: "account.user.get_namespace",
+                subject: "accounts.user.get_namespace",
                 timeout: 5.0
             )
             
-            guard let responseData = response.payload,
-                  let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-                  let namespace = json["namespace"] as? String else {
+            guard let responseData = response.payload else {
                 throw RelayError.invalidPayload
+            }
+            
+            if self.isDebug {
+                if let responseStr = String(data: responseData, encoding: .utf8) {
+                    print("Namespace response: \(responseStr)")
+                }
+            }
+            
+            guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+                  let data = json["data"] as? [String: Any],
+                  let namespace = data["namespace"] as? String else {
+                throw RelayError.invalidPayload
+            }
+            
+            if namespace.isEmpty {
+                throw RelayError.invalidNamespace("Namespace cannot be empty")
             }
             
             return namespace
@@ -229,9 +243,7 @@ public protocol MessageListener {
             if self.isDebug {
                 print("Failed to get namespace: \(error)")
             }
-            // For now, return a default namespace for testing
-            // In production, this should be handled differently
-            return "default"
+            throw RelayError.invalidNamespace("Failed to retrieve namespace: \(error)")
         }
     }
     
@@ -244,13 +256,14 @@ public protocol MessageListener {
         let config: [String: Any] = [
             "name": name,
             "subjects": subjects,
-            "retention": "workqueue",
+            "retention": "limits",
             "max_consumers": -1,
             "max_msgs": -1,
             "max_bytes": -1,
             "max_age": 0,
-            "storage": "memory",
-            "discard": "old"
+            "storage": "file",
+            "discard": "old",
+            "num_replicas": 1
         ]
         
         let jsonData = try JSONSerialization.data(withJSONObject: config)
@@ -273,16 +286,83 @@ public protocol MessageListener {
     /// Ensure a stream exists for the given topic
     /// - Parameter topic: The topic to ensure a stream exists for
     private func ensureStreamExists(for topic: String) async throws {
-        // Extract stream name from topic
-        let streamName = "stream_\(topic.replacingOccurrences(of: ".", with: "_"))"
-        
-        // Check if stream already exists
-        if existingStreams.contains(streamName) {
-            return
+        guard isConnected else {
+            throw RelayError.notConnected("Failed to connect to NATS server")
+        }
+
+        // Get namespace first
+        if namespace == nil {
+            namespace = try await getNamespace()
         }
         
-        // Create stream if it doesn't exist
-        try await createStream(name: streamName, subjects: [NatsConstants.Topics.formatTopic(topic)])
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available")
+        }
+
+        // Format stream name as namespace_stream
+        let streamName = "\(currentNamespace)_stream"
+        
+        if isDebug {
+            print("Checking stream existence: \(streamName)")
+        }
+
+        // Format the subject for this topic
+        let formattedSubject = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
+
+        // If stream exists in our cache, check if we need to add the subject
+        if existingStreams.contains(streamName) {
+            // Get stream info to check subjects
+            let streamInfoRequest: [String: Any] = ["name": streamName]
+            let streamInfoResponse = try await natsConnection.request(
+                try JSONSerialization.data(withJSONObject: streamInfoRequest),
+                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.INFO.\(streamName)",
+                timeout: 5.0
+            )
+            
+            if let data = streamInfoResponse.payload,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let config = json["config"] as? [String: Any],
+               var subjects = config["subjects"] as? [String] {
+                
+                // Check if our subject is already included
+                if !subjects.contains(formattedSubject) {
+                    // Add the new subject
+                    subjects.append(formattedSubject)
+                    
+                    // Update stream config with new subjects
+                    let updateConfig: [String: Any] = [
+                        "name": streamName,
+                        "subjects": subjects,
+                        "retention": "limits",
+                        "max_consumers": -1,
+                        "max_msgs": -1,
+                        "max_bytes": -1,
+                        "max_age": 0,
+                        "storage": "file",
+                        "discard": "old",
+                        "num_replicas": 1
+                    ]
+                    
+                    // Update the stream
+                    let updateResponse = try await natsConnection.request(
+                        try JSONSerialization.data(withJSONObject: updateConfig),
+                        subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.UPDATE.\(streamName)"
+                    )
+                    
+                    if isDebug {
+                        if let data = updateResponse.payload,
+                           let str = String(data: data, encoding: .utf8) {
+                            print("Stream update response: \(str)")
+                        }
+                    }
+                }
+            }
+            return
+        }
+
+        // Create new stream with initial subject
+        try await createStream(name: streamName, subjects: [formattedSubject])
+        existingStreams.insert(streamName)
     }
     
     /// Disconnect from the NATS server
@@ -331,6 +411,15 @@ public protocol MessageListener {
             return true
         }
         
+        // Get namespace if not set
+        if namespace == nil {
+            namespace = try await getNamespace()
+        }
+        
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available")
+        }
+        
         // Ensure stream exists
         try await ensureStreamExists(for: topic)
         
@@ -350,8 +439,8 @@ public protocol MessageListener {
         
         let finalData = try JSONSerialization.data(withJSONObject: finalMessage)
         
-        // Format topic as: namespace_stream_topic
-        let finalTopic = NatsConstants.Topics.formatTopic(topic)
+        // Format topic with namespace
+        let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
         
         // Publish directly to the formatted topic
         try await natsConnection.publish(finalData, subject: finalTopic)
@@ -374,10 +463,19 @@ public protocol MessageListener {
         try validateAuth()
         try TopicValidator.validate(topic)
         
+        // Get namespace if not set
+        if namespace == nil {
+            namespace = try await getNamespace()
+        }
+        
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available")
+        }
+        
         // Ensure stream exists
         try await ensureStreamExists(for: topic)
         
-        let finalTopic = NatsConstants.Topics.formatTopic(topic)
+        let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
         let natsSubscription = try await natsConnection.subscribe(subject: finalTopic)
         
         if isDebug {
@@ -440,10 +538,19 @@ public protocol MessageListener {
             await resendStoredMessages()
         }
         
+        // Get namespace if not set
+        if namespace == nil {
+            namespace = try await getNamespace()
+        }
+        
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available")
+        }
+        
         // Ensure stream exists
         try await ensureStreamExists(for: topic)
         
-        let finalTopic = NatsConstants.Topics.formatTopic(topic)
+        let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
         
         // Create subscription if it doesn't exist
         if subscriptions[topic] == nil {
@@ -556,28 +663,36 @@ public protocol MessageListener {
         guard isConnected else {
             return []
         }
+
+        // Get namespace if not set
+        if namespace == nil {
+            namespace = try await getNamespace()
+        }
         
-        // Format the final topic
-        let finalTopic = NatsConstants.Topics.formatTopic(topic)
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available")
+        }
+
+        // Format stream name as namespace_stream
+        let streamName = "\(currentNamespace)_stream"
         
-        // Ensure stream exists
-        try await ensureStreamExists()
-        
-        let consumerName = "history_\(UUID().uuidString)"
-        
-        // Create consumer configuration
-        let streamName = "stream_test_\(topic.replacingOccurrences(of: "test.", with: ""))"
+        if isDebug {
+            print("Using stream name for history: \(streamName)")
+        }
+
+        // Ensure stream exists before proceeding
+        try await ensureStreamExists(for: topic)
+
+        // Create consumer configuration with minimal settings
         let consumerConfig: [String: Any] = [
             "stream_name": streamName,
             "config": [
-                "num_replicas": 1,
-                "name": consumerName,
+                "name": "history_\(UUID().uuidString)",
+                "filter_subject": NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace),
                 "deliver_policy": "all",
-                "max_batch": 1000,
-                "filter_subject": "relay_stream_test.\(topic.replacingOccurrences(of: "test.", with: ""))",
+                "ack_policy": "none",  // Changed back to none for simplicity
                 "max_deliver": 1,
-                "max_ack_pending": 20000,
-                "ack_policy": "explicit"
+                "num_replicas": 1
             ]
         ]
         
@@ -588,79 +703,112 @@ public protocol MessageListener {
         // Create consumer
         let createResponse = try await natsConnection.request(
             try JSONSerialization.data(withJSONObject: consumerConfig),
-            subject: NatsConstants.JetStream.Stream.consumer(stream: streamName),
-            timeout: 5.0
+            subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.CREATE.\(streamName)",
+            timeout: 10.0
         )
         
         if isDebug {
             if let data = createResponse.payload,
                let str = String(data: data, encoding: .utf8) {
                 print("Consumer creation response:", str)
-                
-                // Check for error in response
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let error = json["error"] as? [String: Any] {
-                    print("Error creating consumer:", error)
-                    return []
-                }
             }
         }
         
+        guard let payload = createResponse.payload,
+              let response = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
+              let name = response["name"] as? String else {
+            throw RelayError.invalidResponse
+        }
+        
+        // Request messages in batches
         var messages: [[String: Any]] = []
+        var hasMore = true
+        var batchCount = 1
         
-        // Request all messages at once
-        let batchRequest: [String: Any] = [
-            "batch": 1000,  // Request a large batch to get all messages
-            "no_wait": true  // Don't wait for new messages
-        ]
-        
-        do {
-            let response = try await natsConnection.request(
-                try JSONSerialization.data(withJSONObject: batchRequest),
-                subject: NatsConstants.JetStream.Stream.consumerNext(stream: streamName, consumer: consumerName),
-                timeout: 5.0  // Increased timeout for larger batch
-            )
+        while hasMore && batchCount <= 10 { // Limit to 10 batches to prevent infinite loops
+            let batchRequest: [String: Any] = [
+                "batch": 10,  // Reduced batch size
+                "no_wait": true
+            ]
+            
+            let batchData = try JSONSerialization.data(withJSONObject: batchRequest)
             
             if isDebug {
-                if let data = response.payload,
-                   let str = String(data: data, encoding: .utf8) {
-                    print("Message response:", str)
-                }
+                print("Requesting batch \(batchCount) with config:", String(data: batchData, encoding: .utf8) ?? "")
             }
             
-            if let messageData = response.payload,
-               let messageDict = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any] {
-                messages.append(messageDict)
+            do {
+                let response = try await natsConnection.request(
+                    batchData,
+                    subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.MSG.NEXT.\(streamName).\(name)",
+                    timeout: 2.0  // Reduced timeout for faster failure
+                )
                 
-                // Acknowledge message
-                if let headers = response.headers,
-                   let replyTo = try? headers[NatsHeaderName("Nats-Reply-To")]?.description {
-                    try await natsConnection.publish(Data(), subject: replyTo)
+                if let data = response.payload {
                     if isDebug {
-                        print("Acknowledged message")
+                        print("Batch response data:", String(data: data, encoding: .utf8) ?? "no data")
                     }
+                    
+                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        // Check if this is a "no messages" response
+                        if let description = json["description"] as? String,
+                           description.contains("no messages") {
+                            if isDebug {
+                                print("No more messages available")
+                            }
+                            hasMore = false
+                            continue
+                        }
+                        
+                        // Check message timestamp
+                        if let timestamp = json["start"] as? Int {
+                            let messageDate = Date(timeIntervalSince1970: TimeInterval(timestamp))
+                            let isAfterStart = messageDate >= startDate
+                            let isBeforeEnd = endDate.map { messageDate <= $0 } ?? true
+                            
+                            if isAfterStart && isBeforeEnd {
+                                messages.append(json)
+                                if isDebug {
+                                    print("Added message with timestamp:", timestamp)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    if isDebug {
+                        print("No payload in batch response")
+                    }
+                    hasMore = false
                 }
+            } catch {
+                if isDebug {
+                    print("Error requesting batch: \(error)")
+                }
+                hasMore = false
             }
             
-        } catch {
-            if isDebug {
-                print("Error fetching messages:", error)
-            }
+            batchCount += 1
+            try await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds delay
         }
         
-        // Clean up consumer
+        // Delete the consumer
         do {
-            _ = try await natsConnection.request(
+            let deleteResponse = try await natsConnection.request(
                 Data(),
-                subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.DELETE.\(streamName).\(consumerName)",
+                subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.DELETE.\(streamName).\(name)",
                 timeout: 5.0
             )
+            
             if isDebug {
-                print("Successfully deleted consumer:", consumerName)
+                if let data = deleteResponse.payload,
+                   let str = String(data: data, encoding: .utf8) {
+                    print("Successfully deleted consumer: \(name)")
+                    print("Delete response:", str)
+                }
             }
         } catch {
             if isDebug {
-                print("Error deleting consumer:", error)
+                print("Error deleting consumer: \(error)")
             }
         }
         
@@ -677,10 +825,19 @@ public protocol MessageListener {
         
         for topic in pendingTopics {
             do {
+                // Get namespace if not set
+                if namespace == nil {
+                    namespace = try await getNamespace()
+                }
+                
+                guard let currentNamespace = namespace else {
+                    throw RelayError.invalidNamespace("Namespace not available")
+                }
+                
                 // Ensure stream exists
                 try await ensureStreamExists(for: topic)
                 
-                let finalTopic = NatsConstants.Topics.formatTopic(topic)
+                let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
                 
                 // Create subscription if it doesn't exist
                 if subscriptions[topic] == nil {

@@ -20,18 +20,14 @@ public enum NatsConstants {
             public static func consumerNext(stream: String, consumer: String) -> String {
                 "\(apiPrefix).CONSUMER.MSG.NEXT.\(stream).\(consumer)"
             }
-            
-            public static func consumerDelete(stream: String, consumer: String) -> String {
-                "\(apiPrefix).CONSUMER.DELETE.\(stream).\(consumer)"
-            }
         }
     }
     
     public enum Topics {
-        public static func formatTopic(_ topic: String) -> String {
-            return "\(namespace)_stream_\(topic)"
+        public static func formatTopic(_ topic: String, namespace: String) -> String {
+            // Format: namespace_stream_topic
+            let formattedTopic = topic.replacingOccurrences(of: ".", with: "_")
+            return "\(namespace)_stream_\(formattedTopic)"
         }
-        
-        public static let namespace: String = "relay"
     }
 } 

@@ -234,8 +234,11 @@ struct RealtimeCLI {
     }
 }
 
-// Run the main function
-try await RealtimeCLI.main()
+// // Run the main function
+// try await RealtimeCLI.main()
 
 // try await RealtimeStorageTest.run()
+
+// Run the history test
+try await HistoryTest.main()
 
