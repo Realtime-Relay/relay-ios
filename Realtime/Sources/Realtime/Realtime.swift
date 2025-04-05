@@ -170,6 +170,9 @@ public protocol MessageListener {
         // Subscribe to SDK topics
         try await subscribeToTopics()
         
+        // Resend any stored messages after successful connection
+        await resendStoredMessages()
+        
         if self.isDebug {
             print("✅ Connected and ready")
         }
@@ -427,6 +430,11 @@ public protocol MessageListener {
         guard isConnected else {
             pendingTopics.insert(topic)
             return
+        }
+        
+        // Handle SDK reconnection event
+        if topic == SDKTopic.RECONNECTED {
+            await resendStoredMessages()
         }
         
         // Ensure stream exists
