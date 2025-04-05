@@ -16,9 +16,7 @@ A modern, thread-safe Swift package for real-time messaging in iOS and macOS app
 
 ## 📋 Requirements
 
-- iOS 15.0+ / macOS 12.0+
-- Swift 5.9+
-- Xcode 14.0+
+- iOS 15.0+ / macOS 13.0+
 
 ## 📦 Installation
 
@@ -28,7 +26,7 @@ Add Realtime to your `Package.swift` file:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/your-org/realtime-ios.git", from: "1.0.0")
+    .package(url: "https://github.com/Realtime-Relay/relay-ios.git", from: "1.0.0")
 ]
 ```
 
