@@ -30,6 +30,29 @@ final class MessageStorage {
         return (try? JSONDecoder().decode([StoredMessage].self, from: data)) ?? []
     }
     
+    /// Updates the resent status of a message
+    func updateMessageStatus(topic: String, messageId: String, resent: Bool) {
+        var storedMessages = getStoredMessages()
+        if let index = storedMessages.firstIndex(where: { 
+            $0.topic == topic && 
+            ($0.message["id"] as? String == messageId)
+        }) {
+            storedMessages[index].resent = resent
+            saveMessages(storedMessages)
+        }
+    }
+    
+    /// Get message statuses for MESSAGE_RESEND event
+    func getMessageStatuses() -> [[String: Any]] {
+        return getStoredMessages().map { message in
+            [
+                "topic": message.topic,
+                "message": message.message,
+                "resent": message.resent
+            ]
+        }
+    }
+    
     /// Removes all stored messages
     func clearStoredMessages() {
         userDefaults.removeObject(forKey: storageKey)
@@ -46,22 +69,25 @@ struct StoredMessage: Codable {
     let topic: String
     let message: [String: Any]
     let timestamp: Date
+    var resent: Bool
     
     init(topic: String, message: [String: Any]) {
         self.topic = topic
         self.message = message
         self.timestamp = Date()
+        self.resent = false
     }
     
     // Custom encoding/decoding for Dictionary
     enum CodingKeys: String, CodingKey {
-        case topic, message, timestamp
+        case topic, message, timestamp, resent
     }
     
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         topic = try container.decode(String.self, forKey: .topic)
         timestamp = try container.decode(Date.self, forKey: .timestamp)
+        resent = try container.decode(Bool.self, forKey: .resent)
         
         // Decode message as Data first, then convert to Dictionary
         let messageData = try container.decode(Data.self, forKey: .message)
@@ -72,6 +98,7 @@ struct StoredMessage: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(topic, forKey: .topic)
         try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(resent, forKey: .resent)
         
         // Convert message Dictionary to Data for storage
         let messageData = try JSONSerialization.data(withJSONObject: message)

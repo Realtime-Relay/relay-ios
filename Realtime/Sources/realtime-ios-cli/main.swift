@@ -32,6 +32,25 @@ class TestMessageListener: MessageListener {
     }
 }
 
+class MessageResendListener: MessageListener {
+    var resendStatuses: [[String: Any]] = []
+    
+    func onMessage(_ message: [String: Any]) {
+        if let messages = message["messages"] as? [[String: Any]] {
+            resendStatuses = messages
+            print("\n📨 Received MESSAGE_RESEND status:")
+            for (index, status) in messages.enumerated() {
+                print("\nMessage \(index + 1):")
+                print("   Topic: \(status["topic"] ?? "")")
+                if let message = status["message"] as? [String: Any] {
+                    print("   Content: \(message)")
+                }
+                print("   Resent: \(status["resent"] ?? false)")
+            }
+        }
+    }
+}
+
 struct RealtimeCLI {
     static func main() async throws {
         print("🧪 Starting Realtime Test...")
@@ -231,6 +250,72 @@ struct RealtimeCLI {
         try await realtime1.disconnect()
         try await realtime2.disconnect()
         print("Disconnected successfully")
+    }
+}
+
+// Run the message resend test
+try await MessageResendTest.main()
+
+struct MessageResendTest {
+    static func main() async throws {
+        print("🧪 Starting Message Resend Test...")
+        
+        // Initialize Realtime instance
+        print("\n📱 Initializing Realtime instance...")
+        let realtime = try Realtime(staging: false, opts: ["debug": true])
+        
+        // Set authentication
+        try realtime.setAuth(
+            apiKey: "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJhdWQiOiJOQVRTIiwibmFtZSI6IklPUyBEZXYiLCJzdWIiOiJVRFdYRDQ0Q01OSlpGU1NCTlNYU1ZNUUJFVE9JNlpQTkU3VkxGUEhKNk5DVE9WNTNTTkhJV0FaSiIsIm5hdHMiOnsiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJzdWJzIjotMSwicHViIjp7ImRlbnkiOlsiPiJdfSwic3ViIjp7ImRlbnkiOlsiPiJdfSwib3JnX2RhdGEiOnsib3JnYW5pemF0aW9uIjoicmVsYXktaW50ZXJuYWwiLCJwcm9qZWN0IjoiSU9TIERldiJ9LCJpc3N1ZXJfYWNjb3VudCI6IkFDWklKWkNJWFNTVVU1NVlFR01QMjM2TUpJMkNSSVJGRkdJRDRKVlE2V1FZWlVXS08yVTdZNEJCIiwidHlwZSI6InVzZXIiLCJ2ZXJzaW9uIjoyfSwiaXNzIjoiQUNaSUpaQ0lYU1NVVTU1WUVHTVAyMzZNSkkyQ1JJUkZGR0lENEpWUTZXUVlaVVdLTzJVN1k0QkIiLCJpYXQiOjE3NDM1MDMzNDUsImp0aSI6Ilo5SExZMi8xdnh1Q0psb1M5RnNjRkRobTN3Ym05SmgrRy9NTnBRQ21BTHBoODVFSmJMV0VBaGJvTkl6ZHZkZ0ZTd1QzcjRMU1M5RW56QkNpWWxpWTNnPT0ifQ.k2yssWr8KHbTMztg7QZpfbjJL1ZnLvX79KkSKnn5COaqUKvr0Hh6NNbLW8dwK6PG19FxhTXbGLSzMinSBcAkDA",
+            secret: "SUABDOOLKL6MUTUMSXHRQFCNAHRYABWGVY7FE7XU5T5RDKC4JWCVOMSJO4"
+        )
+        
+        // Set up message listeners
+        print("\n🎧 Setting up message listeners...")
+        let messageListener = TestMessageListener(name: "Regular Messages")
+        let resendListener = MessageResendListener()
+        
+        try await realtime.on(topic: "test.resend", listener: messageListener)
+        try await realtime.on(topic: SDKTopic.MESSAGE_RESEND, listener: resendListener)
+        try await realtime.on(topic: SDKTopic.RECONNECTED, listener: TestMessageListener(name: "Reconnection"))
+        
+        // Try to publish messages while offline (not connected)
+        print("\n📤 Publishing messages while offline...")
+        let offlineMessages = [
+            ["type": "text", "content": "Offline message 1"],
+            ["type": "text", "content": "Offline message 2"],
+            ["type": "text", "content": "Offline message 3"]
+        ]
+        
+        for (index, message) in offlineMessages.enumerated() {
+            let result = try await realtime.publish(topic: "test.resend", message: message)
+            print("✅ Stored offline message \(index + 1): \(result)")
+        }
+        
+        // Now connect and trigger message resend
+        print("\n🔄 Connecting to trigger message resend...")
+        try await realtime.connect()
+        
+        // Wait for messages to be processed
+        print("\n⏳ Waiting for messages to be processed and resent (5 seconds)...")
+        try await Task.sleep(nanoseconds: 5_000_000_000)
+        
+        // Print received messages
+        print("\n📨 Regular messages received: \(messageListener.receivedMessages.count)")
+        for (index, message) in messageListener.receivedMessages.enumerated() {
+            print("\nMessage \(index + 1):")
+            if let content = message["message"] as? [String: Any] {
+                print("   Content: \(content)")
+            }
+        }
+        
+        // Print resend statuses
+        print("\n📊 Message resend statuses: \(resendListener.resendStatuses.count)")
+        
+        // Disconnect
+        print("\nDisconnecting...")
+        try await realtime.disconnect()
+        print("✅ Message resend test completed")
     }
 }
 

@@ -11,6 +11,7 @@ public enum SDKTopic {
     public static let DISCONNECTED = "sdk.disconnected"
     public static let RECONNECTING = "sdk.reconnecting"
     public static let RECONNECTED = "sdk.reconnected"
+    public static let MESSAGE_RESEND = "sdk.message_resend"
 }
 
 /// Connection event arguments
@@ -174,7 +175,7 @@ public protocol MessageListener {
         try await subscribeToTopics()
         
         // Resend any stored messages after successful connection
-        await resendStoredMessages()
+        try await resendStoredMessages()
         
         if self.isDebug {
             print("✅ Connected and ready")
@@ -485,29 +486,29 @@ public protocol MessageListener {
         return Subscription(from: natsSubscription)
     }
     
-    private func resendStoredMessages() async {
+    func resendStoredMessages() async throws {
         let storedMessages = messageStorage.getStoredMessages()
-        guard !storedMessages.isEmpty else { return }
+        if storedMessages.isEmpty { return }
         
-        if isDebug {
-            print("📤 Resending \(storedMessages.count) stored messages...")
+        print("📤 Resending \(storedMessages.count) stored messages...")
+        
+        for message in storedMessages {
+            if let messageId = message.message["id"] as? String {
+                // Try to publish the message
+                let success = try await publish(topic: message.topic, message: message.message)
+                if success {
+                    print("✅ Resent message to topic: \(message.topic)")
+                    messageStorage.updateMessageStatus(topic: message.topic, messageId: messageId, resent: true)
+                }
+            }
         }
         
-        for storedMessage in storedMessages {
-            do {
-                // Extract the original message from the stored message
-                if let originalMessage = storedMessage.message["message"] {
-                    _ = try await publish(topic: storedMessage.topic, message: originalMessage)
-                    if isDebug {
-                        print("✅ Resent message to topic: \(storedMessage.topic)")
-                    }
-                }
-            } catch {
-                if isDebug {
-                    print("❌ Failed to resend message to topic \(storedMessage.topic): \(error)")
-                }
-                // Keep the message in storage if resend fails
-                continue
+        // Get final message statuses and notify listeners
+        let messageStatuses = messageStorage.getMessageStatuses()
+        if !messageStatuses.isEmpty {
+            let statusMessage: [String: Any] = ["messages": messageStatuses]
+            if let listener = messageListeners[SDKTopic.MESSAGE_RESEND] {
+                listener.onMessage(statusMessage)
             }
         }
         
@@ -535,7 +536,7 @@ public protocol MessageListener {
         
         // Handle SDK reconnection event
         if topic == SDKTopic.RECONNECTED {
-            await resendStoredMessages()
+            try await resendStoredMessages()
         }
         
         // Get namespace if not set
