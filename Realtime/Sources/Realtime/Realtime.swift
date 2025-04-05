@@ -248,50 +248,13 @@ public protocol MessageListener {
         }
     }
     
-    /// Create a JetStream stream
-    /// - Parameters:
-    ///   - name: Name of the stream
-    ///   - subjects: Array of subjects to capture
-    public func createStream(name: String, subjects: [String]) async throws {
-        try validateAuth()
-        let config: [String: Any] = [
-            "name": name,
-            "subjects": subjects,
-            "retention": "limits",
-            "max_consumers": -1,
-            "max_msgs": -1,
-            "max_bytes": -1,
-            "max_age": 0,
-            "storage": "file",
-            "discard": "old",
-            "num_replicas": 1
-        ]
-        
-        let jsonData = try JSONSerialization.data(withJSONObject: config)
-        let response = try await natsConnection.request(
-            jsonData,
-            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.CREATE.\(name)"
-        )
-        
-        if isDebug {
-            if let data = response.payload,
-               let str = String(data: data, encoding: .utf8) {
-                print("Stream creation response: \(str)")
-            }
-        }
-        
-        // Add to existing streams
-        existingStreams.insert(name)
-    }
-    
-    /// Ensure a stream exists for the given topic
-    /// - Parameter topic: The topic to ensure a stream exists for
-    private func ensureStreamExists(for topic: String) async throws {
+    /// Create or get a JetStream stream
+    private func createOrGetStream(for topic: String) async throws {
         guard isConnected else {
-            throw RelayError.notConnected("Failed to connect to NATS server")
+            throw RelayError.notConnected("Not connected to NATS server")
         }
-
-        // Get namespace first
+        
+        // Get namespace if not set
         if namespace == nil {
             namespace = try await getNamespace()
         }
@@ -299,17 +262,17 @@ public protocol MessageListener {
         guard let currentNamespace = namespace else {
             throw RelayError.invalidNamespace("Namespace not available")
         }
-
+        
         // Format stream name as namespace_stream
         let streamName = "\(currentNamespace)_stream"
         
         if isDebug {
             print("Checking stream existence: \(streamName)")
         }
-
+        
         // Format the subject for this topic
         let formattedSubject = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
-
+        
         // If stream exists in our cache, check if we need to add the subject
         if existingStreams.contains(streamName) {
             // Get stream info to check subjects
@@ -327,8 +290,9 @@ public protocol MessageListener {
                 
                 // Check if our subject is already included
                 if !subjects.contains(formattedSubject) {
-                    // Add the new subject
+                    // Add the new subject and ensure uniqueness
                     subjects.append(formattedSubject)
+                    subjects = Array(Set(subjects)) // Make subjects unique
                     
                     // Update stream config with new subjects
                     let updateConfig: [String: Any] = [
@@ -341,7 +305,7 @@ public protocol MessageListener {
                         "max_age": 0,
                         "storage": "file",
                         "discard": "old",
-                        "num_replicas": 1
+                        "num_replicas": 3  // Updated to 3 replicas
                     ]
                     
                     // Update the stream
@@ -360,10 +324,40 @@ public protocol MessageListener {
             }
             return
         }
-
+        
         // Create new stream with initial subject
-        try await createStream(name: streamName, subjects: [formattedSubject])
+        let createConfig: [String: Any] = [
+            "name": streamName,
+            "subjects": [formattedSubject],
+            "retention": "limits",
+            "max_consumers": -1,
+            "max_msgs": -1,
+            "max_bytes": -1,
+            "max_age": 0,
+            "storage": "file",
+            "discard": "old",
+            "num_replicas": 3  // Set to 3 replicas for new streams
+        ]
+        
+        let createResponse = try await natsConnection.request(
+            try JSONSerialization.data(withJSONObject: createConfig),
+            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.CREATE.\(streamName)"
+        )
+        
+        if isDebug {
+            if let data = createResponse.payload,
+               let str = String(data: data, encoding: .utf8) {
+                print("Stream creation response: \(str)")
+            }
+        }
+        
+        // Add to existing streams
         existingStreams.insert(streamName)
+    }
+    
+    /// Update references to ensureStreamExists to use createOrGetStream
+    private func ensureStreamExists(for topic: String) async throws {
+        try await createOrGetStream(for: topic)
     }
     
     /// Disconnect from the NATS server
