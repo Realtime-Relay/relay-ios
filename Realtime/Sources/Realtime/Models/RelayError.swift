@@ -5,6 +5,7 @@ public enum RelayError: LocalizedError {
     case invalidResponse
     case invalidOptions(String)
     case invalidPayload
+    case invalidDate(String)
     
     public var errorDescription: String? {
         switch self {
@@ -15,7 +16,9 @@ public enum RelayError: LocalizedError {
         case .invalidOptions(let message):
             return "Invalid options: \(message)"
         case .invalidPayload:
-            return "Invalid payload"
+            return "Invalid message payload"
+        case .invalidDate(let message):
+            return "Invalid date: \(message)"
         }
     }
 } 

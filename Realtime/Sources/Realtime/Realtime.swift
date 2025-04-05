@@ -424,4 +424,93 @@ public protocol MessageListener {
         
         return false
     }
+    
+    /// Get a list of past messages between a start time and an optional end time
+    /// - Parameters:
+    ///   - topic: The topic to get messages from
+    ///   - startDate: The start date for message retrieval (required)
+    ///   - endDate: The end date for message retrieval (optional)
+    /// - Returns: An array of messages matching the criteria
+    /// - Throws: TopicValidationError if topic is invalid
+    /// - Throws: RelayError.invalidDate if dates are invalid
+    public func history(topic: String, startDate: Date, endDate: Date? = nil) async throws -> [[String: Any]] {
+        try validateAuth()
+        try TopicValidator.validate(topic)
+        
+        // Validate start date
+        guard startDate != Date.distantPast else {
+            throw RelayError.invalidDate("Start date cannot be null or invalid")
+        }
+        
+        // Validate end date if provided
+        if let endDate = endDate {
+            guard endDate > startDate else {
+                throw RelayError.invalidDate("End date must be after start date")
+            }
+        }
+        
+        // Return empty array if not connected
+        guard isConnected else {
+            return []
+        }
+        
+        // Format the final topic and stream name
+        let finalTopic = NatsConstants.Topics.formatTopic(topic)
+        let streamName = "stream_\(topic.replacingOccurrences(of: ".", with: "_"))"
+        
+        // Convert dates to timestamps
+        let startTimestamp = Int(startDate.timeIntervalSince1970)
+        let endTimestamp = endDate.map { Int($0.timeIntervalSince1970) }
+        
+        var messages: [[String: Any]] = []
+        
+        // Create a request to get stream info
+        let streamInfoResponse = try await natsConnection.request(
+            Data(),
+            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.INFO.\(streamName)"
+        )
+        
+        guard let streamInfoData = streamInfoResponse.payload,
+              let streamInfo = try? JSONSerialization.jsonObject(with: streamInfoData) as? [String: Any],
+              let state = streamInfo["state"] as? [String: Any],
+              let lastSeq = state["last_seq"] as? Int else {
+            return []
+        }
+        
+        // Request messages in batches
+        var currentSeq = 1
+        while currentSeq <= lastSeq {
+            let requestConfig: [String: Any] = [
+                "seq": currentSeq,
+                "batch": 10,
+                "no_wait": true
+            ]
+            
+            let response = try await natsConnection.request(
+                try JSONSerialization.data(withJSONObject: requestConfig),
+                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.MSG.GET.\(streamName)"
+            )
+            
+            if let data = response.payload,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let message = json["message"] as? [String: Any],
+               let subject = message["subject"] as? String,
+               subject == finalTopic,
+               let payload = message["data"] as? String,
+               let payloadData = Data(base64Encoded: payload),
+               let messageJson = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] {
+                
+                // Check if message timestamp is within range
+                if let timestamp = messageJson["start"] as? Int {
+                    if timestamp >= startTimestamp && (endTimestamp == nil || timestamp <= endTimestamp!) {
+                        messages.append(messageJson)
+                    }
+                }
+            }
+            
+            currentSeq += 1
+        }
+        
+        return messages
+    }
 }

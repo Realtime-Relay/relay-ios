@@ -130,6 +130,28 @@ struct RealtimeCLI {
         print("\n⏳ Waiting to verify no messages received after unsubscribe (3 seconds)...")
         try await Task.sleep(nanoseconds: 3_000_000_000)
         
+        // Test history functionality
+        print("\n🧪 Testing history functionality...")
+        
+        // Get messages from the last 5 minutes
+        let startDate = Date().addingTimeInterval(-300) // 5 minutes ago
+        print("\n📜 Retrieving messages from the last 5 minutes...")
+        let messages = try await realtime2.history(topic: "test.room1", startDate: startDate)
+        
+        print("\n📋 Retrieved \(messages.count) messages:")
+        for (index, message) in messages.enumerated() {
+            print("\nMessage \(index + 1):")
+            if let content = message["message"] as? [String: Any] {
+                print("   Content: \(content)")
+            }
+            if let clientId = message["client_id"] {
+                print("   From: \(clientId)")
+            }
+            if let timestamp = message["start"] {
+                print("   Timestamp: \(timestamp)")
+            }
+        }
+        
         // Clean up
         print("\nDisconnecting...")
         try await realtime1.disconnect()
