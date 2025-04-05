@@ -34,6 +34,7 @@ public protocol MessageListener {
     
     private var messageListeners: [String: MessageListener] = [:]
     private var subscriptions: [String: NatsSubscription] = [:]
+    private var messageTasks: [String: Task<Void, Never>] = [:]
     
     // MARK: - Initialization
     
@@ -203,6 +204,13 @@ public protocol MessageListener {
     /// Disconnect from the NATS server
     public func disconnect() async throws {
         try validateAuth()
+        
+        // Cancel all message handling tasks
+        for task in messageTasks.values {
+            task.cancel()
+        }
+        messageTasks.removeAll()
+        
         try await natsConnection.close()
         isConnected = false
         
@@ -351,7 +359,7 @@ public protocol MessageListener {
             subscriptions[topic] = subscription
             
             // Start message handling task
-            Task { [weak self] in
+            let task = Task { [weak self] in
                 guard let self = self else { return }
                 
                 do {
@@ -379,6 +387,10 @@ public protocol MessageListener {
                     }
                 }
             }
+            
+            // Store task reference
+            messageTasks[topic] = task
+            subscriptions[topic] = subscription
         }
     }
 }
