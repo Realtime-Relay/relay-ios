@@ -393,4 +393,35 @@ public protocol MessageListener {
             subscriptions[topic] = subscription
         }
     }
+    
+    /// Unsubscribe from a topic and clean up associated resources
+    /// - Parameter topic: The topic to unsubscribe from
+    /// - Returns: true if successfully unsubscribed, false otherwise
+    /// - Throws: TopicValidationError if topic is invalid
+    public func off(topic: String) async throws -> Bool {
+        try validateAuth()
+        try TopicValidator.validate(topic)
+        
+        // Cancel and remove message handling task
+        if let task = messageTasks[topic] {
+            task.cancel()
+            messageTasks.removeValue(forKey: topic)
+        }
+        
+        // Remove message listener
+        messageListeners.removeValue(forKey: topic)
+        
+        // Unsubscribe from NATS and remove subscription
+        if let subscription = subscriptions[topic] {
+            try await subscription.unsubscribe()
+            subscriptions.removeValue(forKey: topic)
+            
+            if isDebug {
+                print("Unsubscribed from topic: \(topic)")
+            }
+            return true
+        }
+        
+        return false
+    }
 }

@@ -102,6 +102,34 @@ struct RealtimeCLI {
         print("\n⏳ Waiting for messages to be processed (5 seconds)...")
         try await Task.sleep(nanoseconds: 5_000_000_000)
         
+        // Test unsubscribing
+        print("\n🧪 Testing unsubscribe functionality...")
+        
+        // Unsubscribe Instance 1 from the topic
+        print("\nUnsubscribing Instance 1 from topic...")
+        let unsubscribed = try await realtime1.off(topic: "test.room1")
+        if unsubscribed {
+            print("✅ Instance 1 successfully unsubscribed")
+        } else {
+            print("❌ Instance 1 failed to unsubscribe")
+        }
+        
+        // Send another message from Instance 2
+        print("\n📤 Instance 2 sending another message after unsubscribe...")
+        let message3: [String: Any] = [
+            "type": "text",
+            "content": "This message should not be received by Instance 1!",
+            "timestamp": Date().timeIntervalSince1970
+        ]
+        let result3 = try await realtime2.publish(topic: "test.room1", message: message3)
+        if result3 {
+            print("✅ Instance 2 message sent")
+        }
+        
+        // Wait to see if Instance 1 receives the message (it shouldn't)
+        print("\n⏳ Waiting to verify no messages received after unsubscribe (3 seconds)...")
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+        
         // Clean up
         print("\nDisconnecting...")
         try await realtime1.disconnect()
@@ -114,4 +142,4 @@ struct RealtimeCLI {
 try await RealtimeCLI.main()
 
 // try await RealtimeStorageTest.run()
-
+ 
