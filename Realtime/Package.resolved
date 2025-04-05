@@ -1,5 +1,4 @@
 {
-  "originHash" : "edef3ed38bfc9e6a8c212afc03bf9b77835f285e841c01184f4f69d28a702a11",
   "pins" : [
     {
       "identity" : "base32",
@@ -56,6 +55,15 @@
       }
     },
     {
+      "identity" : "swift-msgpack",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/nnabeyang/swift-msgpack",
+      "state" : {
+        "revision" : "1c8dbd506c68888df3fd5df4ff56cef9cb39c388",
+        "version" : "0.7.0"
+      }
+    },
+    {
       "identity" : "swift-nio",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
@@ -101,5 +109,5 @@
       }
     }
   ],
-  "version" : 3
+  "version" : 2
 }

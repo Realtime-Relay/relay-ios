@@ -22,4 +22,12 @@ public enum NatsConstants {
             }
         }
     }
+    
+    public enum Topics {
+        public static func formatTopic(_ topic: String, namespace: String) -> String {
+            // Format: namespace_stream_topic
+            let formattedTopic = topic.replacingOccurrences(of: ".", with: "_")
+            return "\(namespace)_stream_\(formattedTopic)"
+        }
+    }
 } 

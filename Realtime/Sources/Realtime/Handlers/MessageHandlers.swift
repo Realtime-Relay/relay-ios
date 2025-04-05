@@ -1,3 +1,10 @@
+//
+//  File.swift
+//  Relay
+//
+//  Created by Shaxzod on 02/04/25.
+//
+
 import Foundation
 
 /// Protocol for handling messages
@@ -57,16 +64,16 @@ public struct JSONHistoryHandler<T: Codable & Sendable>: HistoryHandling {
 }
 
 /// A handler for messages that require a response
-public struct RequestHandler<T: Codable & Sendable, R: Codable & Sendable>: Sendable {
+public struct RequestHandler<T: Codable & Sendable, R: Codable & Sendable> {
     private let handler: @Sendable (T) async throws -> R
-    private let relay: Relay
+    private let realtime: Realtime
     
     /// Initialize a new request handler
     /// - Parameters:
-    ///   - relay: The Relay instance to use for message handling
+    ///   - realtime: The Realtime instance to use for message handling
     ///   - handler: The closure to call when a request is received
-    public init(relay: Relay, handler: @escaping @Sendable (T) async throws -> R) {
-        self.relay = relay
+    public init(realtime: Realtime, handler: @escaping @Sendable (T) async throws -> R) {
+        self.realtime = realtime
         self.handler = handler
     }
     
@@ -98,7 +105,7 @@ public struct RequestHandler<T: Codable & Sendable, R: Codable & Sendable>: Send
         limit: Int = 100,
         handler: @escaping @Sendable ([T]) -> Void
     ) async throws {
-        let messages = try await relay.getMessageHistory(stream: stream, limit: limit)
+        let messages = try await realtime.getMessageHistory(stream: stream, limit: limit)
         let decoded = messages.compactMap { message -> T? in
             let decoded = try? JSONDecoder().decode(T.self, from: message.payload)
             return decoded
