@@ -11,7 +11,7 @@ public enum TopicValidationError: LocalizedError {
     case emptyTopic
     case containsSpaces
     case containsStar
-    case systemTopic
+    case systemTopicPublish
     
     public var errorDescription: String? {
         switch self {
@@ -21,24 +21,14 @@ public enum TopicValidationError: LocalizedError {
             return "Topic cannot contain spaces"
         case .containsStar:
             return "Topic cannot contain '*' character"
-        case .systemTopic:
+        case .systemTopicPublish:
             return "Cannot publish to system topics"
         }
     }
 }
 
 public struct TopicValidator {
-    private static let systemTopics: Set<String> = [
-        "CONNECTED",
-        "RECONNECT",
-        "MESSAGE_RESEND",
-        "DISCONNECTED",
-        "RECONNECTING",
-        "RECONNECTED",
-        "RECONN_FAIL"
-    ]
-    
-    public static func validate(_ topic: String) throws {
+    public static func validate(_ topic: String, forPublishing: Bool = false) throws {
         // Check if topic is empty
         guard !topic.isEmpty else {
             throw TopicValidationError.emptyTopic
@@ -54,9 +44,9 @@ public struct TopicValidator {
             throw TopicValidationError.containsStar
         }
         
-        // Check if it's a system topic
-        guard !systemTopics.contains(topic.uppercased()) else {
-            throw TopicValidationError.systemTopic
+        // Only check system topics for publishing
+        if forPublishing && SystemEvent.reservedTopics.contains(topic) {
+            throw TopicValidationError.systemTopicPublish
         }
     }
 } 

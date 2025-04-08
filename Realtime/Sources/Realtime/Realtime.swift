@@ -6,20 +6,18 @@ import Foundation
 import Dispatch
 import SwiftMsgpack
 
-/// SDK Topics for internal events
-public enum SDKTopic {
-    public static let CONNECTED = "sdk.connected"
-    public static let DISCONNECTED = "sdk.disconnected"
-    public static let RECONNECTING = "sdk.reconnecting"
-    public static let RECONNECTED = "sdk.reconnected"
-    public static let MESSAGE_RESEND = "sdk.message_resend"
-}
-
-/// Connection event arguments
-public enum ConnectionEvent: String {
-    case RECONNECTING
-    case RECONNECTED
-    case DISCONNECTED
+/// System events for internal SDK events
+public enum SystemEvent: String, CaseIterable {
+    case connected = "sdk.connected"
+    case disconnected = "sdk.disconnected"
+    case reconnecting = "sdk.reconnecting"
+    case reconnected = "sdk.reconnected"
+    case messageResend = "sdk.message_resend"
+    
+    /// Reserved system topics that cannot be used by clients
+    static var reservedTopics: Set<String> {
+        return Set(SystemEvent.allCases.map { $0.rawValue })
+    }
 }
 
 /// Protocol for receiving messages from the Realtime service
@@ -60,8 +58,6 @@ public protocol MessageListener {
     ///   - secret: The secret key for authentication
     /// - Throws: RelayError.invalidCredentials if credentials are invalid
     public init(apiKey: String, secret: String) throws {
-        try validateCredentials(apiKey: apiKey, secret: secret)
-        
         self.apiKey = apiKey
         self.secret = secret
         self.clientId = "ios_\(UUID().uuidString)"
@@ -73,6 +69,8 @@ public protocol MessageListener {
             .reconnectWait(1000)
         
         self.natsConnection = options.build()
+        
+        try validateCredentials(apiKey: apiKey, secret: secret)
     }
     
     /// Prepare the Realtime instance with configuration
@@ -192,7 +190,7 @@ public protocol MessageListener {
     
     /// Get the namespace for the current user
     private func getNamespace() async throws -> String {
-        guard let apiKey = self.apiKey else {
+        guard !self.apiKey.isEmpty else {
             throw RelayError.invalidCredentials("API key not set")
         }
         
@@ -391,8 +389,8 @@ public protocol MessageListener {
     /// - Throws: TopicValidationError if topic is invalid
     /// - Throws: RelayError.invalidPayload if message is invalid
     public func publish(topic: String, message: Any) async throws -> Bool {
-        // Validate topic
-        try TopicValidator.validate(topic)
+        // Validate topic for publishing
+        try TopicValidator.validate(topic, forPublishing: true)
         
         // Encode the message with MessagePack
         let encoder = MsgPackEncoder()
@@ -514,7 +512,7 @@ public protocol MessageListener {
         let messageStatuses = messageStorage.getMessageStatuses()
         if !messageStatuses.isEmpty {
             let statusMessage: [String: Any] = ["messages": messageStatuses]
-            if let listener = messageListeners[SDKTopic.MESSAGE_RESEND] {
+            if let listener = messageListeners[SystemEvent.messageResend.rawValue] {
                 listener.onMessage(statusMessage)
             }
         }
@@ -538,11 +536,6 @@ public protocol MessageListener {
         guard isConnected else {
             pendingTopics.insert(topic)
             return
-        }
-        
-        // Handle SDK reconnection event
-        if topic == SDKTopic.RECONNECTED {
-            try await resendStoredMessages()
         }
         
         // Get namespace if not set
