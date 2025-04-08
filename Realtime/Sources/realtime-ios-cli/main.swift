@@ -1,4 +1,6 @@
 import Foundation
 
 // Run the tests
-try await SystemEventTest.main()
+if #available(iOS 15.0, *) {
+    try await SystemEventTest.main()
+}

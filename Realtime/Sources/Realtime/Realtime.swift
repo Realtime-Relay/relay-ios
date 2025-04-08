@@ -464,35 +464,6 @@ public protocol MessageListener {
         return true
     }
     
-    /// Subscribe to a topic
-    /// - Parameters:
-    ///   - topic: The topic to subscribe to
-    /// - Returns: A Subscription that can be used to receive messages
-    public func subscribe(topic: String) async throws -> Subscription {
-        try TopicValidator.validate(topic)
-        
-        // Get namespace if not set
-        if namespace == nil {
-            namespace = try await getNamespace()
-        }
-        
-        guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available")
-        }
-        
-        // Ensure stream exists
-        try await ensureStreamExists(for: topic)
-        
-        let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
-        let natsSubscription = try await natsConnection.subscribe(subject: finalTopic)
-        
-        if isDebug {
-            print("Subscribed to topic: \(topic)")
-        }
-        
-        return Subscription(from: natsSubscription)
-    }
-    
     func resendStoredMessages() async throws {
         let storedMessages = messageStorage.getStoredMessages()
         if storedMessages.isEmpty { return }
