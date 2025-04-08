@@ -25,6 +25,46 @@ public protocol MessageListener {
     func onMessage(_ message: [String: Any])
 }
 
+/// Message structure for encoding/decoding
+private struct RealtimeMessage: Codable {
+    let clientId: String
+    let id: String
+    let room: String
+    let message: MessageContent
+    let start: Int
+    
+    enum MessageContent: Codable {
+        case string(String)
+        case integer(Int)
+        case json(Data)
+        
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let string = try? container.decode(String.self) {
+                self = .string(string)
+            } else if let integer = try? container.decode(Int.self) {
+                self = .integer(integer)
+            } else if let data = try? container.decode(Data.self) {
+                self = .json(data)
+            } else {
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid message content")
+            }
+        }
+        
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            switch self {
+            case .string(let string):
+                try container.encode(string)
+            case .integer(let integer):
+                try container.encode(integer)
+            case .json(let data):
+                try container.encode(data)
+            }
+        }
+    }
+}
+
 @preconcurrency public final class Realtime: @unchecked Sendable {
     // MARK: - Properties
     
@@ -394,35 +434,40 @@ public protocol MessageListener {
         // Validate topic for publishing
         try TopicValidator.validate(topic, forPublishing: true)
         
-        // Encode the message with MessagePack
-        let encoder = MsgPackEncoder()
-        let encodedMessage: Data
-        do {
-            if let intMessage = message as? Int {
-                encodedMessage = try encoder.encode(intMessage)
-            } else if let jsonData = try? JSONSerialization.data(withJSONObject: message) {
-                encodedMessage = try encoder.encode(jsonData)
-            } else if let stringMessage = message as? String {
-                encodedMessage = try encoder.encode(stringMessage)
-            } else {
-                throw RelayError.invalidPayload("Message must be a valid JSON object, string, or integer")
-            }
-        } catch {
-            throw RelayError.invalidPayload("Failed to encode message with MessagePack: \(error)")
+        // Create message content
+        let messageContent: RealtimeMessage.MessageContent
+        if let string = message as? String {
+            messageContent = .string(string)
+        } else if let integer = message as? Int {
+            messageContent = .integer(integer)
+        } else if let json = message as? [String: Any] {
+            let jsonData = try JSONSerialization.data(withJSONObject: json)
+            messageContent = .json(jsonData)
+        } else {
+            throw RelayError.invalidPayload("Message must be a valid JSON object, string, or integer")
         }
+        
+        // Create the final message
+        let finalMessage = RealtimeMessage(
+            clientId: clientId,
+            id: UUID().uuidString,
+            room: topic,
+            message: messageContent,
+            start: Int(Date().timeIntervalSince1970)
+        )
         
         // If not connected, store message locally
         if !isConnected {
-            let finalMessage: [String: Any] = [
-                "client_id": clientId,
-                "id": UUID().uuidString,
-                "room": topic,
-                "message": encodedMessage.base64EncodedString(),
-                "start": Int(Date().timeIntervalSince1970)
+            let messageDict: [String: Any] = [
+                "client_id": finalMessage.clientId,
+                "id": finalMessage.id,
+                "room": finalMessage.room,
+                "message": message,
+                "start": finalMessage.start
             ]
-            messageStorage.storeMessage(topic: topic, message: finalMessage)
+            messageStorage.storeMessage(topic: topic, message: messageDict)
             if isDebug {
-                print("💾 Stored message locally (offline): \(finalMessage)")
+                print("💾 Stored message locally (offline): \(messageDict)")
             }
             return true
         }
@@ -439,28 +484,24 @@ public protocol MessageListener {
         // Ensure stream exists
         try await ensureStreamExists(for: topic)
         
-        // Create the final message format
-        let finalMessage: [String: Any] = [
-            "client_id": clientId,
-            "id": UUID().uuidString,
-            "room": topic,
-            "message": encodedMessage.base64EncodedString(),
-            "start": Int(Date().timeIntervalSince1970)
-        ]
-        
-        let finalData = try JSONSerialization.data(withJSONObject: finalMessage)
+        // Encode the message with MessagePack
+        let encoder = MsgPackEncoder()
+        let encodedMessage: Data
+        do {
+            encodedMessage = try encoder.encode(finalMessage)
+        } catch {
+            throw RelayError.invalidPayload("Failed to encode message with MessagePack: \(error)")
+        }
         
         // Format topic with namespace
         let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
         
         // Publish directly to the formatted topic
-        try await natsConnection.publish(finalData, subject: finalTopic)
+        try await natsConnection.publish(encodedMessage, subject: finalTopic)
         
         if isDebug {
             print("Published message to topic: \(finalTopic)")
-            if let str = String(data: finalData, encoding: .utf8) {
-                print("Message payload: \(str)")
-            }
+            print("Message payload: \(finalMessage)")
         }
         
         return true
@@ -546,75 +587,36 @@ public protocol MessageListener {
                         }
                         
                         do {
-                            // Parse the JSON wrapper
-                            guard let payload = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                                  let listener = self.messageListeners[topic] else {
-                                if self.isDebug {
-                                    print("Invalid message format or no listener found")
-                                }
-                                continue
-                            }
-                            
-                            // Extract and decode the MessagePack content
-                            guard let base64Message = payload["message"] as? String,
-                                  let messageData = Data(base64Encoded: base64Message) else {
-                                if self.isDebug {
-                                    print("Invalid message format: missing or invalid message content")
-                                }
-                                continue
-                            }
-                            
                             // Decode the MessagePack data
                             let decoder = MsgPackDecoder()
-                            let messageContent: Any
+                            let decodedMessage = try decoder.decode(RealtimeMessage.self, from: data)
                             
-                            do {
-                                // First try to decode as JSON data
-                                if let jsonData = try? decoder.decode(Data.self, from: messageData),
-                                   let jsonContent = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
-                                    messageContent = jsonContent
-                                }
-                                // Then try as a string
-                                else if let stringContent = try? decoder.decode(String.self, from: messageData) {
-                                    messageContent = stringContent
-                                }
-                                // Then try as an integer
-                                else if let intContent = try? decoder.decode(Int.self, from: messageData) {
-                                    messageContent = intContent
-                                }
-                                else {
-                                    throw RelayError.invalidPayload("Unknown MessagePack content type")
-                                }
-                            } catch {
-                                if self.isDebug {
-                                    print("Failed to decode MessagePack content: \(error)")
-                                }
-                                continue
-                            }
-                            
-                            // Create the final message dictionary
+                            // Convert to dictionary for listener
                             let messageDict: [String: Any] = [
-                                "id": payload["id"] as? String ?? "",
-                                "client_id": payload["client_id"] as? String ?? "",
-                                "timestamp": payload["start"] as? Int ?? 0,
-                                "message": messageContent
+                                "client_id": decodedMessage.clientId,
+                                "id": decodedMessage.id,
+                                "room": decodedMessage.room,
+                                "message": try {
+                                    switch decodedMessage.message {
+                                    case .string(let string):
+                                        return string
+                                    case .integer(let integer):
+                                        return integer
+                                    case .json(let data):
+                                        return try JSONSerialization.jsonObject(with: data)
+                                    }
+                                }(),
+                                "start": decodedMessage.start
                             ]
                             
                             // Notify the listener
-                            listener.onMessage(messageDict)
-                            
-                            if self.isDebug {
-                                print("\n📨 [\(topic)] Received message via listener:")
-                                print("   From: \(messageDict["client_id"] ?? "unknown")")
-                                print("   Content: \(messageContent)")
+                            if let listener = self.messageListeners[topic] {
+                                listener.onMessage(messageDict)
                                 
-                                if let content = messageContent as? [String: Any] {
-                                    print("\n📦 Decoded Message Content:")
-                                    print("   Type: \(content["type"] ?? "unknown")")
-                                    print("   Content: \(content["content"] ?? "none")")
-                                    if let timestamp = content["timestamp"] {
-                                        print("   Timestamp: \(timestamp)")
-                                    }
+                                if self.isDebug {
+                                    print("\n📨 [\(topic)] Received message via listener:")
+                                    print("   From: \(decodedMessage.clientId)")
+                                    print("   Content: \(messageDict["message"] ?? "none")")
                                 }
                             }
                         } catch {
@@ -888,75 +890,36 @@ public protocol MessageListener {
                                 }
                                 
                                 do {
-                                    // Parse the JSON wrapper
-                                    guard let payload = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                                          let listener = self.messageListeners[topic] else {
-                                        if self.isDebug {
-                                            print("Invalid message format or no listener found")
-                                        }
-                                        continue
-                                    }
-                                    
-                                    // Extract and decode the MessagePack content
-                                    guard let base64Message = payload["message"] as? String,
-                                          let messageData = Data(base64Encoded: base64Message) else {
-                                        if self.isDebug {
-                                            print("Invalid message format: missing or invalid message content")
-                                        }
-                                        continue
-                                    }
-                                    
                                     // Decode the MessagePack data
                                     let decoder = MsgPackDecoder()
-                                    let messageContent: Any
+                                    let decodedMessage = try decoder.decode(RealtimeMessage.self, from: data)
                                     
-                                    do {
-                                        // First try to decode as JSON data
-                                        if let jsonData = try? decoder.decode(Data.self, from: messageData),
-                                           let jsonContent = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
-                                            messageContent = jsonContent
-                                        }
-                                        // Then try as a string
-                                        else if let stringContent = try? decoder.decode(String.self, from: messageData) {
-                                            messageContent = stringContent
-                                        }
-                                        // Then try as an integer
-                                        else if let intContent = try? decoder.decode(Int.self, from: messageData) {
-                                            messageContent = intContent
-                                        }
-                                        else {
-                                            throw RelayError.invalidPayload("Unknown MessagePack content type")
-                                        }
-                                    } catch {
-                                        if self.isDebug {
-                                            print("Failed to decode MessagePack content: \(error)")
-                                        }
-                                        continue
-                                    }
-                                    
-                                    // Create the final message dictionary
+                                    // Convert to dictionary for listener
                                     let messageDict: [String: Any] = [
-                                        "id": payload["id"] as? String ?? "",
-                                        "client_id": payload["client_id"] as? String ?? "",
-                                        "timestamp": payload["start"] as? Int ?? 0,
-                                        "message": messageContent
+                                        "client_id": decodedMessage.clientId,
+                                        "id": decodedMessage.id,
+                                        "room": decodedMessage.room,
+                                        "message": try {
+                                            switch decodedMessage.message {
+                                            case .string(let string):
+                                                return string
+                                            case .integer(let integer):
+                                                return integer
+                                            case .json(let data):
+                                                return try JSONSerialization.jsonObject(with: data)
+                                            }
+                                        }(),
+                                        "start": decodedMessage.start
                                     ]
                                     
                                     // Notify the listener
-                                    listener.onMessage(messageDict)
-                                    
-                                    if self.isDebug {
-                                        print("\n📨 [\(topic)] Received message via listener:")
-                                        print("   From: \(messageDict["client_id"] ?? "unknown")")
-                                        print("   Content: \(messageContent)")
+                                    if let listener = self.messageListeners[topic] {
+                                        listener.onMessage(messageDict)
                                         
-                                        if let content = messageContent as? [String: Any] {
-                                            print("\n📦 Decoded Message Content:")
-                                            print("   Type: \(content["type"] ?? "unknown")")
-                                            print("   Content: \(content["content"] ?? "none")")
-                                            if let timestamp = content["timestamp"] {
-                                                print("   Timestamp: \(timestamp)")
-                                            }
+                                        if self.isDebug {
+                                            print("\n📨 [\(topic)] Received message via listener:")
+                                            print("   From: \(decodedMessage.clientId)")
+                                            print("   Content: \(messageDict["message"] ?? "none")")
                                         }
                                     }
                                 } catch {
