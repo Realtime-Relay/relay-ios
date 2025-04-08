@@ -65,7 +65,6 @@ public protocol MessageListener {
         }
         
         self.isDebug = opts["debug"] as? Bool ?? false
-        self.clientId = UUID().uuidString
         self.isStaging = staging
         self.messageStorage = MessageStorage()
         
@@ -82,6 +81,8 @@ public protocol MessageListener {
             .reconnectWait(1000)
         
         self.natsConnection = options.build()
+        // Generate a persistent UUID for this connection
+        self.clientId = "ios_\(UUID().uuidString)"
     }
     
     deinit {
@@ -95,13 +96,7 @@ public protocol MessageListener {
     
     /// Set authentication credentials
     public func setAuth(apiKey: String, secret: String) throws {
-        guard !apiKey.isEmpty else {
-            throw RelayError.invalidCredentials("API key cannot be empty")
-        }
-        
-        guard !secret.isEmpty else {
-            throw RelayError.invalidCredentials("Secret key cannot be empty")
-        }
+        try validateCredentials(apiKey: apiKey, secret: secret)
         
         self.apiKey = apiKey
         self.secret = secret
@@ -144,10 +139,24 @@ public protocol MessageListener {
         self.natsConnection = options.build()
     }
     
-    private func validateAuth() throws {
-        guard apiKey != nil && secret != nil else {
-            throw RelayError.invalidCredentials("API key and secret must be set before performing operations")
+    private func validateCredentials(apiKey: String?, secret: String?) throws {
+        if apiKey == nil && secret == nil {
+            throw RelayError.invalidCredentials("Both API key and secret are missing. Please provide both credentials.")
+        } else if apiKey == nil {
+            throw RelayError.invalidCredentials("API key is missing. Please provide a valid API key.")
+        } else if secret == nil {
+            throw RelayError.invalidCredentials("Secret is missing. Please provide a valid secret.")
+        } else if apiKey!.isEmpty && secret!.isEmpty {
+            throw RelayError.invalidCredentials("Both API key and secret are empty. Please provide valid credentials.")
+        } else if apiKey!.isEmpty {
+            throw RelayError.invalidCredentials("API key is empty. Please provide a valid API key.")
+        } else if secret!.isEmpty {
+            throw RelayError.invalidCredentials("Secret is empty. Please provide a valid secret.")
         }
+    }
+    
+    private func validateAuth() throws {
+        try validateCredentials(apiKey: apiKey, secret: secret)
     }
     
     /// Connect to the NATS server
