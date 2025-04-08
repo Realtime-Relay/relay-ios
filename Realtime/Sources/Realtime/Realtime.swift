@@ -303,7 +303,7 @@ public protocol MessageListener {
                     // Update stream config with new subjects
                     let updateConfig: [String: Any] = [
                         "name": streamName,
-                        "subjects": subjects,
+            "subjects": subjects,
                         "retention": "limits",
                         "max_consumers": -1,
                         "max_msgs": -1,
@@ -385,7 +385,7 @@ public protocol MessageListener {
     /// Publish a message to a topic using JetStream
     /// - Parameters:
     ///   - topic: The topic to publish to
-    ///   - message: The message to publish (String, number, or JSON)
+    ///   - message: The message to publish (String, number, JSON object)
     /// - Throws: TopicValidationError if topic is invalid
     /// - Throws: RelayError.invalidPayload if message is invalid
     public func publish(topic: String, message: Any) async throws -> Bool {
@@ -396,12 +396,14 @@ public protocol MessageListener {
         let encoder = MsgPackEncoder()
         let encodedMessage: Data
         do {
-            if let jsonData = try? JSONSerialization.data(withJSONObject: message) {
+            if let intMessage = message as? Int {
+                encodedMessage = try encoder.encode(intMessage)
+            } else if let jsonData = try? JSONSerialization.data(withJSONObject: message) {
                 encodedMessage = try encoder.encode(jsonData)
             } else if let stringMessage = message as? String {
                 encodedMessage = try encoder.encode(stringMessage)
             } else {
-                throw RelayError.invalidPayload("Message must be a valid JSON object or string")
+                throw RelayError.invalidPayload("Message must be a valid JSON object, string, or integer")
             }
         } catch {
             throw RelayError.invalidPayload("Failed to encode message with MessagePack: \(error)")
@@ -597,22 +599,15 @@ public protocol MessageListener {
                                 // First try to decode as JSON data
                                 if let jsonData = try? decoder.decode(Data.self, from: messageData),
                                    let jsonContent = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
-                                    // If we have a content field, try to decode it from base64
-                                    if let base64Content = jsonContent["content"] as? String,
-                                       let contentData = Data(base64Encoded: base64Content),
-                                       let decodedData = try? decoder.decode(Data.self, from: contentData),
-                                       let decodedContent = try? JSONSerialization.jsonObject(with: decodedData) {
-                                        // Create final message with decoded content
-                                        var finalMessage = jsonContent
-                                        finalMessage["content"] = decodedContent
-                                        messageContent = finalMessage
-                                    } else {
-                                        messageContent = jsonContent
-                                    }
+                                    messageContent = jsonContent
                                 }
                                 // Then try as a string
                                 else if let stringContent = try? decoder.decode(String.self, from: messageData) {
                                     messageContent = stringContent
+                                }
+                                // Then try as an integer
+                                else if let intContent = try? decoder.decode(Int.self, from: messageData) {
+                                    messageContent = intContent
                                 }
                                 else {
                                     throw RelayError.invalidPayload("Unknown MessagePack content type")
@@ -946,22 +941,15 @@ public protocol MessageListener {
                                         // First try to decode as JSON data
                                         if let jsonData = try? decoder.decode(Data.self, from: messageData),
                                            let jsonContent = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
-                                            // If we have a content field, try to decode it from base64
-                                            if let base64Content = jsonContent["content"] as? String,
-                                               let contentData = Data(base64Encoded: base64Content),
-                                               let decodedData = try? decoder.decode(Data.self, from: contentData),
-                                               let decodedContent = try? JSONSerialization.jsonObject(with: decodedData) {
-                                                // Create final message with decoded content
-                                                var finalMessage = jsonContent
-                                                finalMessage["content"] = decodedContent
-                                                messageContent = finalMessage
-                                            } else {
-                                                messageContent = jsonContent
-                                            }
+                                            messageContent = jsonContent
                                         }
                                         // Then try as a string
                                         else if let stringContent = try? decoder.decode(String.self, from: messageData) {
                                             messageContent = stringContent
+                                        }
+                                        // Then try as an integer
+                                        else if let intContent = try? decoder.decode(Int.self, from: messageData) {
+                                            messageContent = intContent
                                         }
                                         else {
                                             throw RelayError.invalidPayload("Unknown MessagePack content type")

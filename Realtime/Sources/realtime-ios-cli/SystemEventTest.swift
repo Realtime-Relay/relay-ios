@@ -136,8 +136,26 @@ public struct SystemEventTest {
         try await realtime.connect()
         try await Task.sleep(nanoseconds: 2_000_000_000) // Wait 2 seconds
         
-        // Test 4: Topic Validation
-        print("\n🧪 Test 4: Testing system topic validation...")
+        // Test 4: Integer Message Publishing
+        print("\n🧪 Test 4: Testing integer message publishing...")
+        let integerListener = TestMessageListener(name: "Integer") { message in
+            print("\n🔢 Integer Message Event:")
+            print("  Time: \(Date().formatted())")
+            if let messageContent = message["message"] as? String {
+                print("  Content: \(messageContent)")
+            }
+            print("  Raw Message: \(message)")
+        }
+        try await realtime.on(topic: "test.integer", listener: integerListener)
+        
+        // Publish integer values
+        print("\nPublishing integer messages...")
+        _ = try await realtime.publish(topic: "test.integer", message: 42)
+        _ = try await realtime.publish(topic: "test.integer", message: 123)
+        try await Task.sleep(nanoseconds: 2_000_000_000) // Wait 2 seconds
+        
+        // Test 5: Topic Validation
+        print("\n🧪 Test 5: Testing system topic validation...")
         do {
             _ = try await realtime.publish(topic: SystemEvent.connected.rawValue, message: "test")
             print("❌ Error: Should not be able to publish to system topic")
