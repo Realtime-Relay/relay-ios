@@ -32,8 +32,8 @@ public protocol MessageListener {
     
     var natsConnection: NatsClient
     private var servers: [URL] = []
-    private var apiKey: String?
-    private var secret: String?
+    private let apiKey: String
+    private let secret: String
     private var isConnected = false
     private var credentialsPath: URL?
     private var isDebug: Bool = false
@@ -54,52 +54,45 @@ public protocol MessageListener {
     
     // MARK: - Initialization
     
-    /// Initialize a new Realtime instance with configuration
+    /// Initialize a new Realtime instance with authentication
+    /// - Parameters:
+    ///   - apiKey: The API key for authentication
+    ///   - secret: The secret key for authentication
+    /// - Throws: RelayError.invalidCredentials if credentials are invalid
+    public init(apiKey: String, secret: String) throws {
+        try validateCredentials(apiKey: apiKey, secret: secret)
+        
+        self.apiKey = apiKey
+        self.secret = secret
+        self.clientId = "ios_\(UUID().uuidString)"
+        self.messageStorage = MessageStorage()
+        
+        // Configure NATS connection with required settings
+        let options = NatsClientOptions()
+            .maxReconnects(1200)
+            .reconnectWait(1000)
+        
+        self.natsConnection = options.build()
+    }
+    
+    /// Prepare the Realtime instance with configuration
     /// - Parameters:
     ///   - staging: Whether to use staging environment
     ///   - opts: Configuration options including debug mode
-    /// - Throws: RelayError.invalidOptions if options are not provided
-    public init(staging: Bool, opts: [String: Any]) throws {
+    /// - Throws: RelayError.invalidOptions if options are invalid
+    public func prepare(staging: Bool, opts: [String: Any]) throws {
         guard !opts.isEmpty else {
             throw RelayError.invalidOptions("Options must be provided")
         }
         
         self.isDebug = opts["debug"] as? Bool ?? false
         self.isStaging = staging
-        self.messageStorage = MessageStorage()
         
         // Configure server URLs based on staging flag
         let baseUrl = staging ? "0.0.0.0" : "api.relay-x.io"
         self.servers = (4221...4226).map { port in
             URL(string: "nats://\(baseUrl):\(port)")!
         }
-        
-        // Configure NATS connection with required settings
-        let options = NatsClientOptions()
-            .urls(servers)
-            .maxReconnects(1200)
-            .reconnectWait(1000)
-        
-        self.natsConnection = options.build()
-        // Generate a persistent UUID for this connection
-        self.clientId = "ios_\(UUID().uuidString)"
-    }
-    
-    deinit {
-        // Clean up credentials file
-        if let path = credentialsPath {
-            try? FileManager.default.removeItem(at: path)
-        }
-    }
-    
-    // MARK: - Public Methods
-    
-    /// Set authentication credentials
-    public func setAuth(apiKey: String, secret: String) throws {
-        try validateCredentials(apiKey: apiKey, secret: secret)
-        
-        self.apiKey = apiKey
-        self.secret = secret
         
         // Create temporary credentials file with correct NATS format
         let credentialsContent = """
@@ -139,6 +132,15 @@ public protocol MessageListener {
         self.natsConnection = options.build()
     }
     
+    deinit {
+        // Clean up credentials file
+        if let path = credentialsPath {
+            try? FileManager.default.removeItem(at: path)
+        }
+    }
+    
+    // MARK: - Public Methods
+    
     private func validateCredentials(apiKey: String?, secret: String?) throws {
         if apiKey == nil && secret == nil {
             throw RelayError.invalidCredentials("Both API key and secret are missing. Please provide both credentials.")
@@ -153,10 +155,6 @@ public protocol MessageListener {
         } else if secret!.isEmpty {
             throw RelayError.invalidCredentials("Secret is empty. Please provide a valid secret.")
         }
-    }
-    
-    private func validateAuth() throws {
-        try validateCredentials(apiKey: apiKey, secret: secret)
     }
     
     /// Connect to the NATS server
@@ -372,8 +370,6 @@ public protocol MessageListener {
     
     /// Disconnect from the NATS server
     public func disconnect() async throws {
-        try validateAuth()
-        
         // Cancel all message handling tasks
         for task in messageTasks.values {
             task.cancel()
@@ -395,8 +391,6 @@ public protocol MessageListener {
     /// - Throws: TopicValidationError if topic is invalid
     /// - Throws: RelayError.invalidPayload if message is invalid
     public func publish(topic: String, message: Any) async throws -> Bool {
-        try validateAuth()
-        
         // Validate topic
         try TopicValidator.validate(topic)
         
@@ -475,7 +469,6 @@ public protocol MessageListener {
     ///   - topic: The topic to subscribe to
     /// - Returns: A Subscription that can be used to receive messages
     public func subscribe(topic: String) async throws -> Subscription {
-        try validateAuth()
         try TopicValidator.validate(topic)
         
         // Get namespace if not set
@@ -536,7 +529,6 @@ public protocol MessageListener {
     ///   - listener: The message listener interface
     /// - Throws: TopicValidationError if topic is invalid
     public func on(topic: String, listener: MessageListener) async throws {
-        try validateAuth()
         try TopicValidator.validate(topic)
         
         // Store the listener
@@ -687,7 +679,6 @@ public protocol MessageListener {
     /// - Returns: true if successfully unsubscribed, false otherwise
     /// - Throws: TopicValidationError if topic is invalid
     public func off(topic: String) async throws -> Bool {
-        try validateAuth()
         try TopicValidator.validate(topic)
         
         // Cancel and remove message handling task
