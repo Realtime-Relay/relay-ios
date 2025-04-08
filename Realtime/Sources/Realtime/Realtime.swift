@@ -70,7 +70,7 @@ public protocol MessageListener {
         
         self.natsConnection = options.build()
         
-        try validateCredentials(apiKey: apiKey, secret: secret)
+        try validateCredentials(apiKey: apiKey, secret: secret) // We also need to check here if credentials are ok before creating the object.
     }
     
     /// Prepare the Realtime instance with configuration
@@ -157,6 +157,8 @@ public protocol MessageListener {
     
     /// Connect to the NATS server
     public func connect() async throws {
+        try validateCredentials(apiKey: apiKey, secret: secret)
+        
         if self.isDebug {
             print("🔄 Connecting and retrieving namespace...")
         }
