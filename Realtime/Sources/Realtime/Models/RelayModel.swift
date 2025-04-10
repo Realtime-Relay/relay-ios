@@ -9,35 +9,35 @@ import Foundation
 
 
 // MARK: - JetStream Response Models
-struct StreamInfo: Codable {
-    let config: StreamConfig
-    let created: String
-    let state: StreamState
-}
+//struct StreamInfo: Codable {
+//    let config: StreamConfig
+//    let created: String
+//    let state: StreamState
+//}
 
-struct StreamConfig: Codable {
-    let name: String
-    let subjects: [String]
-    let retention: String
-    let maxConsumers: Int
-    let maxMsgsPerSubject: Int
-    let maxMsgs: Int
-    let maxBytes: Int
-    let maxAge: Int64
-    let storage: String
-    let discard: String
-    let numReplicas: Int
-    
-    private enum CodingKeys: String, CodingKey {
-        case name, subjects, retention, storage, discard
-        case maxConsumers = "max_consumers"
-        case maxMsgsPerSubject = "max_msgs_per_subject"
-        case maxMsgs = "max_msgs"
-        case maxBytes = "max_bytes"
-        case maxAge = "max_age"
-        case numReplicas = "num_replicas"
-    }
-}
+//struct StreamConfig: Codable {
+//    let name: String
+//    let subjects: [String]
+//    let retention: String
+//    let maxConsumers: Int
+//    let maxMsgsPerSubject: Int
+//    let maxMsgs: Int
+//    let maxBytes: Int
+//    let maxAge: Int64
+//    let storage: String
+//    let discard: String
+//    let numReplicas: Int
+//    
+//    private enum CodingKeys: String, CodingKey {
+//        case name, subjects, retention, storage, discard
+//        case maxConsumers = "max_consumers"
+//        case maxMsgsPerSubject = "max_msgs_per_subject"
+//        case maxMsgs = "max_msgs"
+//        case maxBytes = "max_bytes"
+//        case maxAge = "max_age"
+//        case numReplicas = "num_replicas"
+//    }
+//}
 
 struct StreamState: Codable {
     let messages: Int

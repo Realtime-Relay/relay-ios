@@ -266,64 +266,59 @@ import SwiftMsgpack
         // Format the subject for this topic
         let formattedSubject = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
         
-        // Get stream info first
-        let streamInfoRequest: [String: Any] = ["name": streamName]
-        let streamInfoResponse = try? await natsConnection.request(
-            try JSONSerialization.data(withJSONObject: streamInfoRequest),
-            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.INFO.\(streamName)",
-            timeout: 5.0
-        )
+        // Get JetStream context
+        let js = JetStreamContext(client: natsConnection)
         
-        var existingSubjects: Set<String> = []
-        if let data = streamInfoResponse?.payload,
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let config = json["config"] as? [String: Any],
-           let subjects = config["subjects"] as? [String] {
-            existingSubjects = Set(subjects)
-        }
-        
-        // Add our new subject
-        existingSubjects.insert(formattedSubject)
-        
-        // Create or update stream config
-        let streamConfig: [String: Any] = [
-            "name": streamName,
-            "subjects": Array(existingSubjects),
-            "retention": "limits",
-            "max_consumers": -1,
-            "max_msgs": -1,
-            "max_bytes": -1,
-            "max_age": 0,
-            "storage": "file",
-            "discard": "old",
-            "num_replicas": 3
-        ]
-        
-        // Try to update first, if that fails, try to create
         do {
-            let updateResponse = try await natsConnection.request(
-                try JSONSerialization.data(withJSONObject: streamConfig),
-                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.UPDATE.\(streamName)"
-            )
+            // Try to get existing stream
+            let stream = try await js.getStream(name: streamName)
             
-            if isDebug {
-                if let data = updateResponse.payload,
-                   let str = String(data: data, encoding: .utf8) {
-                    print("Stream update response: \(str)")
+            // Get current subjects
+            var subjects = stream?.info.config.subjects ?? []
+            
+            // Add new subject if not exists
+            if !subjects.contains(formattedSubject) {
+                subjects.append(formattedSubject)
+                
+                // Update stream with new subjects
+                let config = StreamConfig(
+                    name: streamName,
+                    subjects: subjects,
+                    retention: .limits,
+                    maxConsumers: -1,
+                    maxMsgs: -1,
+                    maxBytes: -1,
+                    discard: .old,
+                    maxAge: NanoTimeInterval(0),
+                    storage: .file,
+                    replicas: 3
+                )
+                
+                try await js.updateStream(cfg: config)
+                
+                if isDebug {
+                    print("Updated stream with new subject: \(formattedSubject)")
                 }
             }
         } catch {
-            // If update fails, try to create
-            let createResponse = try await natsConnection.request(
-                try JSONSerialization.data(withJSONObject: streamConfig),
-                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.CREATE.\(streamName)"
+            // Stream doesn't exist, create new one
+            let config = StreamConfig(
+                name: streamName,
+                subjects: [formattedSubject],
+                retention: .limits,
+                maxConsumers: -1,
+                maxMsgs: -1,
+                maxBytes: -1,
+                discard: .old,
+                maxAge: NanoTimeInterval(0),
+                storage: .file,
+                replicas: 3
             )
             
+            try await js.createStream(cfg: config)
+            
             if isDebug {
-                if let data = createResponse.payload,
-                   let str = String(data: data, encoding: .utf8) {
-                    print("Stream creation response: \(str)")
-                }
+                print("Created new stream with subject: \(formattedSubject)")
             }
         }
         

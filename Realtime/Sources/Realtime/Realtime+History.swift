@@ -1,4 +1,5 @@
 import Foundation
+import JetStream
 @preconcurrency import Nats
 
 extension Realtime {
@@ -48,17 +49,17 @@ extension Realtime {
         
         // Calculate the sequence range to fetch
         let startSeq = max(1, streamInfo.state.firstSeq)
-        let endSeq = min(streamInfo.state.lastSeq, startSeq + limit - 1)
+        let endSeq = min(streamInfo.state.lastSeq, startSeq + UInt64(limit) - 1)
         
         // Fetch messages in batches
         var messages: [Message] = []
         
         for batchStart in stride(from: startSeq, through: endSeq, by: batchSize) {
-            let batchEnd = min(batchStart + batchSize - 1, endSeq)
+            let batchEnd = min(batchStart + UInt64(batchSize) - 1, endSeq)
             let batchMessages = try await fetchMessagesInRange(
                 stream: stream,
-                startSeq: batchStart,
-                endSeq: batchEnd,
+                startSeq: Int(batchStart),
+                endSeq: Int(batchEnd),
                 subject: subject
             )
             messages.append(contentsOf: batchMessages)
@@ -69,36 +70,6 @@ extension Realtime {
         }
         
         return Array(messages.prefix(limit))
-    }
-    
-    /// Fetch messages after a specific sequence number
-    /// - Parameters:
-    ///   - stream: Name of the stream
-    ///   - sequence: Sequence number to start from
-    ///   - limit: Maximum number of messages to return
-    /// - Returns: Array of messages
-    public func fetchMessagesAfter(
-        stream: String,
-        sequence: UInt64,
-        limit: Int = 100
-    ) async throws -> [Message] {
-        let streamInfoRequest = ["name": stream]
-        let streamInfoResponse = try await natsConnection.request(
-            try JSONSerialization.data(withJSONObject: streamInfoRequest),
-            subject: NatsConstants.JetStream.Stream.info(stream: stream)
-        )
-        
-        guard let infoData = streamInfoResponse.payload,
-              let streamInfo = try? JSONDecoder().decode(StreamInfo.self, from: infoData) else {
-            throw RelayError.invalidResponse
-        }
-        
-        let endSeq = min(streamInfo.state.lastSeq, Int(sequence) + limit - 1)
-        return try await fetchMessagesInRange(
-            stream: stream,
-            startSeq: Int(sequence),
-            endSeq: endSeq
-        )
     }
     
     // MARK: - Private Helpers
