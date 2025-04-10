@@ -3,67 +3,9 @@
 
 import Foundation
 @preconcurrency import Nats
+@preconcurrency import JetStream
 import Dispatch
 import SwiftMsgpack
-
-/// System events for internal SDK events
-public enum SystemEvent: String, CaseIterable {
-    case connected = "sdk.connected"
-    case disconnected = "sdk.disconnected"
-    case reconnecting = "sdk.reconnecting"
-    case reconnected = "sdk.reconnected"
-    case messageResend = "sdk.message_resend"
-    
-    /// Reserved system topics that cannot be used by clients
-    static var reservedTopics: Set<String> {
-        return Set(SystemEvent.allCases.map { $0.rawValue })
-    }
-}
-
-/// Protocol for receiving messages from the Realtime service
-public protocol MessageListener {
-    func onMessage(_ message: [String: Any])
-}
-
-/// Message structure for encoding/decoding
-private struct RealtimeMessage: Codable {
-    let clientId: String
-    let id: String
-    let room: String
-    let message: MessageContent
-    let start: Int
-    
-    enum MessageContent: Codable {
-        case string(String)
-        case integer(Int)
-        case json(Data)
-        
-        init(from decoder: Decoder) throws {
-            let container = try decoder.singleValueContainer()
-            if let string = try? container.decode(String.self) {
-                self = .string(string)
-            } else if let integer = try? container.decode(Int.self) {
-                self = .integer(integer)
-            } else if let data = try? container.decode(Data.self) {
-                self = .json(data)
-            } else {
-                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid message content")
-            }
-        }
-        
-        func encode(to encoder: Encoder) throws {
-            var container = encoder.singleValueContainer()
-            switch self {
-            case .string(let string):
-                try container.encode(string)
-            case .integer(let integer):
-                try container.encode(integer)
-            case .json(let data):
-                try container.encode(data)
-            }
-        }
-    }
-}
 
 @preconcurrency public final class Realtime: @unchecked Sendable {
     // MARK: - Properties

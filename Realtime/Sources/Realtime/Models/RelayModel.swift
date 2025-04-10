@@ -54,8 +54,8 @@ struct StreamState: Codable {
     }
 }
 
-struct JetStreamMessage: Codable {
-    let subject: String
-    let data: Data
-    let headers: [String: String]?
-}
+//struct JetStreamMessage: Codable {
+//    let subject: String
+//    let data: Data
+//    let headers: [String: String]?
+//}
