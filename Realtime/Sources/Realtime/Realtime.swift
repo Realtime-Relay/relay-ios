@@ -10,6 +10,7 @@ import SwiftMsgpack
 @preconcurrency public final class Realtime: @unchecked Sendable {
     // MARK: - Properties
     
+    private var jetStream: JetStreamContext
     var natsConnection: NatsClient
     private var servers: [URL] = []
     private let apiKey: String
@@ -51,8 +52,9 @@ import SwiftMsgpack
             .reconnectWait(1000)
         
         self.natsConnection = options.build()
+        self.jetStream = JetStreamContext(client: natsConnection)
         
-        try validateCredentials(apiKey: apiKey, secret: secret) // We also need to check here if credentials are ok before creating the object.
+        try validateCredentials(apiKey: apiKey, secret: secret)
     }
     
     /// Prepare the Realtime instance with configuration
@@ -110,6 +112,7 @@ import SwiftMsgpack
         
         // Rebuild connection with new credentials
         self.natsConnection = options.build()
+        self.jetStream = JetStreamContext(client: natsConnection)
     }
     
     deinit {
@@ -263,62 +266,29 @@ import SwiftMsgpack
         // Format the subject for this topic
         let formattedSubject = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
         
-        // If stream exists in our cache, check if we need to add the subject
-        if existingStreams.contains(streamName) {
-            // Get stream info to check subjects
-            let streamInfoRequest: [String: Any] = ["name": streamName]
-            let streamInfoResponse = try await natsConnection.request(
-                try JSONSerialization.data(withJSONObject: streamInfoRequest),
-                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.INFO.\(streamName)",
-                timeout: 5.0
-            )
-            
-            if let data = streamInfoResponse.payload,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let config = json["config"] as? [String: Any],
-               var subjects = config["subjects"] as? [String] {
-                
-                // Check if our subject is already included
-                if !subjects.contains(formattedSubject) {
-                    // Add the new subject and ensure uniqueness
-                    subjects.append(formattedSubject)
-                    subjects = Array(Set(subjects)) // Make subjects unique
-                    
-                    // Update stream config with new subjects
-                    let updateConfig: [String: Any] = [
-                        "name": streamName,
-            "subjects": subjects,
-                        "retention": "limits",
-                        "max_consumers": -1,
-                        "max_msgs": -1,
-                        "max_bytes": -1,
-                        "max_age": 0,
-                        "storage": "file",
-                        "discard": "old",
-                        "num_replicas": 3  // Updated to 3 replicas
-                    ]
-                    
-                    // Update the stream
-                    let updateResponse = try await natsConnection.request(
-                        try JSONSerialization.data(withJSONObject: updateConfig),
-                        subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.UPDATE.\(streamName)"
-                    )
-                    
-                    if isDebug {
-                        if let data = updateResponse.payload,
-                           let str = String(data: data, encoding: .utf8) {
-                            print("Stream update response: \(str)")
-                        }
-                    }
-                }
-            }
-            return
+        // Get stream info first
+        let streamInfoRequest: [String: Any] = ["name": streamName]
+        let streamInfoResponse = try? await natsConnection.request(
+            try JSONSerialization.data(withJSONObject: streamInfoRequest),
+            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.INFO.\(streamName)",
+            timeout: 5.0
+        )
+        
+        var existingSubjects: Set<String> = []
+        if let data = streamInfoResponse?.payload,
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let config = json["config"] as? [String: Any],
+           let subjects = config["subjects"] as? [String] {
+            existingSubjects = Set(subjects)
         }
         
-        // Create new stream with initial subject
-        let createConfig: [String: Any] = [
+        // Add our new subject
+        existingSubjects.insert(formattedSubject)
+        
+        // Create or update stream config
+        let streamConfig: [String: Any] = [
             "name": streamName,
-            "subjects": [formattedSubject],
+            "subjects": Array(existingSubjects),
             "retention": "limits",
             "max_consumers": -1,
             "max_msgs": -1,
@@ -326,22 +296,38 @@ import SwiftMsgpack
             "max_age": 0,
             "storage": "file",
             "discard": "old",
-            "num_replicas": 3  // Set to 3 replicas for new streams
+            "num_replicas": 3
         ]
         
-        let createResponse = try await natsConnection.request(
-            try JSONSerialization.data(withJSONObject: createConfig),
-            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.CREATE.\(streamName)"
-        )
-        
-        if isDebug {
-            if let data = createResponse.payload,
-               let str = String(data: data, encoding: .utf8) {
-                print("Stream creation response: \(str)")
+        // Try to update first, if that fails, try to create
+        do {
+            let updateResponse = try await natsConnection.request(
+                try JSONSerialization.data(withJSONObject: streamConfig),
+                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.UPDATE.\(streamName)"
+            )
+            
+            if isDebug {
+                if let data = updateResponse.payload,
+                   let str = String(data: data, encoding: .utf8) {
+                    print("Stream update response: \(str)")
+                }
+            }
+        } catch {
+            // If update fails, try to create
+            let createResponse = try await natsConnection.request(
+                try JSONSerialization.data(withJSONObject: streamConfig),
+                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.CREATE.\(streamName)"
+            )
+            
+            if isDebug {
+                if let data = createResponse.payload,
+                   let str = String(data: data, encoding: .utf8) {
+                    print("Stream creation response: \(str)")
+                }
             }
         }
         
-        // Add to existing streams
+        // Add to existing streams cache
         existingStreams.insert(streamName)
     }
     
@@ -407,7 +393,9 @@ import SwiftMsgpack
                 "message": message,
                 "start": finalMessage.start
             ]
+            
             messageStorage.storeMessage(topic: topic, message: messageDict)
+            
             if isDebug {
                 print("💾 Stored message locally (offline): \(messageDict)")
             }
@@ -438,15 +426,23 @@ import SwiftMsgpack
         // Format topic with namespace
         let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
         
-        // Publish directly to the formatted topic
-        try await natsConnection.publish(encodedMessage, subject: finalTopic)
-        
-        if isDebug {
-            print("Published message to topic: \(finalTopic)")
-            print("Message payload: \(finalMessage)")
+        // Publish using JetStream
+        do {
+            let ackFuture = try await jetStream.publish(finalTopic, message: encodedMessage)
+            let ack = try await ackFuture.wait()
+            
+            if isDebug {
+                print("Published message to topic: \(finalTopic)")
+                print("Message payload: \(finalMessage)")
+                print("JetStream ACK: \(ack)")
+            }
+            return true
+        } catch {
+            if isDebug {
+                print("Failed to publish message: \(error)")
+            }
+            return false
         }
-        
-        return true
     }
     
     func resendStoredMessages() async throws {
