@@ -1,5 +1,5 @@
 //
-//  File.swift
+//  RelayError.swift
 //  Relay
 //
 //  Created by Shaxzod on 02/04/25.
@@ -15,6 +15,8 @@ public enum RelayError: LocalizedError {
     case notConnected(String)
     case invalidDate(String)
     case invalidNamespace(String)
+    case subscriptionFailed(String)
+    case unsubscribeFailed(String)
     
     public var errorDescription: String? {
         switch self {
@@ -32,6 +34,10 @@ public enum RelayError: LocalizedError {
             return "Invalid date: \(message)"
         case .invalidNamespace(let message):
             return "Invalid namespace: \(message)"
+        case .subscriptionFailed(let message):
+            return "Subscription failed: \(message)"
+        case .unsubscribeFailed(let message):
+            return "Unsubscribe failed: \(message)"
         }
     }
 } 

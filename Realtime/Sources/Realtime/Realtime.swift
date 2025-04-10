@@ -550,70 +550,83 @@ import SwiftMsgpack
         
         // Create subscription if it doesn't exist
         if subscriptions[topic] == nil {
-            let subscription = try await natsConnection.subscribe(subject: finalTopic)
-            subscriptions[topic] = subscription
-            
-            // Start message handling task
-            let task = Task { [weak self] in
-                guard let self = self else { return }
+            do {
+                let subscription = try await natsConnection.subscribe(subject: finalTopic)
+                subscriptions[topic] = subscription
                 
-                do {
-                    for try await message in subscription {
-                        guard let data = message.payload else {
-                            if self.isDebug {
-                                print("Message payload is nil")
-                            }
-                            continue
-                        }
-                        
-                        do {
-                            // Decode the MessagePack data
-                            let decoder = MsgPackDecoder()
-                            let decodedMessage = try decoder.decode(RealtimeMessage.self, from: data)
-                            
-                            // Convert to dictionary for listener
-                            let messageDict: [String: Any] = [
-                                "client_id": decodedMessage.clientId,
-                                "id": decodedMessage.id,
-                                "room": decodedMessage.room,
-                                "message": try {
-                                    switch decodedMessage.message {
-                                    case .string(let string):
-                                        return string
-                                    case .integer(let integer):
-                                        return integer
-                                    case .json(let data):
-                                        return try JSONSerialization.jsonObject(with: data)
-                                    }
-                                }(),
-                                "start": decodedMessage.start
-                            ]
-                            
-                            // Notify the listener
-                            if let listener = self.messageListeners[topic] {
-                                listener.onMessage(messageDict)
-                                
+                // Start message handling task
+                let task = Task { [weak self] in
+                    guard let self = self else { return }
+                    
+                    do {
+                        for try await message in subscription {
+                            guard let data = message.payload else {
                                 if self.isDebug {
-                                    print("\n📨 [\(topic)] Received message via listener:")
-                                    print("   From: \(decodedMessage.clientId)")
-                                    print("   Content: \(messageDict["message"] ?? "none")")
+                                    print("Message payload is nil")
+                                }
+                                continue
+                            }
+                            
+                            do {
+                                // Decode the MessagePack data
+                                let decoder = MsgPackDecoder()
+                                let decodedMessage = try decoder.decode(RealtimeMessage.self, from: data)
+                                
+                                // Convert to dictionary for listener
+                                let messageDict: [String: Any] = [
+                                    "client_id": decodedMessage.clientId,
+                                    "id": decodedMessage.id,
+                                    "room": decodedMessage.room,
+                                    "message": try {
+                                        switch decodedMessage.message {
+                                        case .string(let string):
+                                            return string
+                                        case .integer(let integer):
+                                            return integer
+                                        case .json(let data):
+                                            return try JSONSerialization.jsonObject(with: data)
+                                        }
+                                    }(),
+                                    "start": decodedMessage.start
+                                ]
+                                
+                                // Notify the listener
+                                if let listener = self.messageListeners[topic] {
+                                    listener.onMessage(messageDict)
+                                    
+                                    if self.isDebug {
+                                        print("\n📨 [\(topic)] Received message via listener:")
+                                        print("   From: \(decodedMessage.clientId)")
+                                        print("   Content: \(messageDict["message"] ?? "none")")
+                                    }
+                                }
+                            } catch {
+                                if self.isDebug {
+                                    print("Error processing message: \(error)")
                                 }
                             }
-                        } catch {
-                            if self.isDebug {
-                                print("Error processing message: \(error)")
-                            }
                         }
-                    }
-                } catch {
-                    if self.isDebug {
-                        print("Error handling messages for topic \(topic): \(error)")
+                    } catch {
+                        if self.isDebug {
+                            print("Error handling messages for topic \(topic): \(error)")
+                        }
+                        // Clean up resources on error
+                        self.subscriptions.removeValue(forKey: topic)
+                        self.messageTasks.removeValue(forKey: topic)
                     }
                 }
+                
+                // Store task reference
+                messageTasks[topic] = task
+                
+                if isDebug {
+                    print("✅ Subscribed to topic: \(topic)")
+                }
+            } catch {
+                // Clean up on subscription failure
+                messageListeners.removeValue(forKey: topic)
+                throw RelayError.subscriptionFailed("Failed to subscribe to topic \(topic): \(error)")
             }
-            
-            // Store task reference
-            messageTasks[topic] = task
         }
     }
     
@@ -624,10 +637,13 @@ import SwiftMsgpack
     public func off(topic: String) async throws -> Bool {
         try TopicValidator.validate(topic)
         
+        var success = false
+        
         // Cancel and remove message handling task
         if let task = messageTasks[topic] {
             task.cancel()
             messageTasks.removeValue(forKey: topic)
+            success = true
         }
         
         // Remove message listener
@@ -635,16 +651,23 @@ import SwiftMsgpack
         
         // Unsubscribe from NATS and remove subscription
         if let subscription = subscriptions[topic] {
-            try await subscription.unsubscribe()
-            subscriptions.removeValue(forKey: topic)
-            
-            if isDebug {
-                print("Unsubscribed from topic: \(topic)")
+            do {
+                try await subscription.unsubscribe()
+                subscriptions.removeValue(forKey: topic)
+                success = true
+                
+                if isDebug {
+                    print("✅ Unsubscribed from topic: \(topic)")
+                }
+            } catch {
+                if isDebug {
+                    print("Error unsubscribing from topic \(topic): \(error)")
+                }
+                throw RelayError.unsubscribeFailed("Failed to unsubscribe from topic \(topic): \(error)")
             }
-            return true
         }
         
-        return false
+        return success
     }
     
     /// Get a list of past messages between a start time and an optional end time
@@ -791,6 +814,8 @@ import SwiftMsgpack
     private func subscribeToTopics() async throws {
         guard !pendingTopics.isEmpty else { return }
         
+        var errors: [Error] = []
+        
         for topic in pendingTopics {
             do {
                 // Get namespace if not set
@@ -809,80 +834,102 @@ import SwiftMsgpack
                 
                 // Create subscription if it doesn't exist
                 if subscriptions[topic] == nil {
-                    let subscription = try await natsConnection.subscribe(subject: finalTopic)
-                    subscriptions[topic] = subscription
-                    
-                    // Start message handling task
-                    let task = Task { [weak self] in
-                        guard let self = self else { return }
+                    do {
+                        let subscription = try await natsConnection.subscribe(subject: finalTopic)
+                        subscriptions[topic] = subscription
                         
-                        do {
-                            for try await message in subscription {
-                                guard let data = message.payload else {
-                                    if self.isDebug {
-                                        print("Message payload is nil")
-                                    }
-                                    continue
-                                }
-                                
-                                do {
-                                    // Decode the MessagePack data
-                                    let decoder = MsgPackDecoder()
-                                    let decodedMessage = try decoder.decode(RealtimeMessage.self, from: data)
-                                    
-                                    // Convert to dictionary for listener
-                                    let messageDict: [String: Any] = [
-                                        "client_id": decodedMessage.clientId,
-                                        "id": decodedMessage.id,
-                                        "room": decodedMessage.room,
-                                        "message": try {
-                                            switch decodedMessage.message {
-                                            case .string(let string):
-                                                return string
-                                            case .integer(let integer):
-                                                return integer
-                                            case .json(let data):
-                                                return try JSONSerialization.jsonObject(with: data)
-                                            }
-                                        }(),
-                                        "start": decodedMessage.start
-                                    ]
-                                    
-                                    // Notify the listener
-                                    if let listener = self.messageListeners[topic] {
-                                        listener.onMessage(messageDict)
-                                        
+                        // Start message handling task
+                        let task = Task { [weak self] in
+                            guard let self = self else { return }
+                            
+                            do {
+                                for try await message in subscription {
+                                    guard let data = message.payload else {
                                         if self.isDebug {
-                                            print("\n📨 [\(topic)] Received message via listener:")
-                                            print("   From: \(decodedMessage.clientId)")
-                                            print("   Content: \(messageDict["message"] ?? "none")")
+                                            print("Message payload is nil")
+                                        }
+                                        continue
+                                    }
+                                    
+                                    do {
+                                        // Decode the MessagePack data
+                                        let decoder = MsgPackDecoder()
+                                        let decodedMessage = try decoder.decode(RealtimeMessage.self, from: data)
+                                        
+                                        // Convert to dictionary for listener
+                                        let messageDict: [String: Any] = [
+                                            "client_id": decodedMessage.clientId,
+                                            "id": decodedMessage.id,
+                                            "room": decodedMessage.room,
+                                            "message": try {
+                                                switch decodedMessage.message {
+                                                case .string(let string):
+                                                    return string
+                                                case .integer(let integer):
+                                                    return integer
+                                                case .json(let data):
+                                                    return try JSONSerialization.jsonObject(with: data)
+                                                }
+                                            }(),
+                                            "start": decodedMessage.start
+                                        ]
+                                        
+                                        // Notify the listener
+                                        if let listener = self.messageListeners[topic] {
+                                            listener.onMessage(messageDict)
+                                            
+                                            if self.isDebug {
+                                                print("\n📨 [\(topic)] Received message via listener:")
+                                                print("   From: \(decodedMessage.clientId)")
+                                                print("   Content: \(messageDict["message"] ?? "none")")
+                                            }
+                                        }
+                                    } catch {
+                                        if self.isDebug {
+                                            print("Error processing message: \(error)")
                                         }
                                     }
-                                } catch {
-                                    if self.isDebug {
-                                        print("Error processing message: \(error)")
-                                    }
                                 }
-                            }
-                        } catch {
-                            if self.isDebug {
-                                print("Error handling messages for topic \(topic): \(error)")
+                            } catch {
+                                if self.isDebug {
+                                    print("Error handling messages for topic \(topic): \(error)")
+                                }
+                                // Clean up resources on error
+                                self.subscriptions.removeValue(forKey: topic)
+                                self.messageTasks.removeValue(forKey: topic)
                             }
                         }
+                        
+                        // Store task reference
+                        messageTasks[topic] = task
+                        
+                        if isDebug {
+                            print("✅ Subscribed to pending topic: \(topic)")
+                        }
+                    } catch {
+                        errors.append(error)
+                        if isDebug {
+                            print("Error subscribing to topic \(topic): \(error)")
+                        }
+                        // Clean up on subscription failure
+                        messageListeners.removeValue(forKey: topic)
                     }
-                    
-                    // Store task reference
-                    messageTasks[topic] = task
                 }
             } catch {
+                errors.append(error)
                 if isDebug {
-                    print("Error subscribing to topic \(topic): \(error)")
+                    print("Error processing topic \(topic): \(error)")
                 }
             }
         }
         
         // Clear pending topics after processing
         pendingTopics.removeAll()
+        
+        // Throw if any errors occurred
+        if !errors.isEmpty {
+            throw RelayError.subscriptionFailed("Failed to subscribe to some topics: \(errors)")
+        }
     }
     
     private func ensureStreamExists() async throws {
