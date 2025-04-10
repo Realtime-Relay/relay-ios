@@ -10,7 +10,7 @@ import SwiftMsgpack
 @preconcurrency public final class Realtime: @unchecked Sendable {
     // MARK: - Properties
     
-    private var jetStream: JetStreamContext
+    private var jetStream: JetStreamContext?
     var natsConnection: NatsClient
     private var servers: [URL] = []
     private let apiKey: String
@@ -52,7 +52,7 @@ import SwiftMsgpack
             .reconnectWait(1000)
         
         self.natsConnection = options.build()
-        self.jetStream = JetStreamContext(client: natsConnection)
+        // Don't initialize jetStream here as we need a connected client
         
         try validateCredentials(apiKey: apiKey, secret: secret)
     }
@@ -112,7 +112,7 @@ import SwiftMsgpack
         
         // Rebuild connection with new credentials
         self.natsConnection = options.build()
-        self.jetStream = JetStreamContext(client: natsConnection)
+        // Don't initialize jetStream here as we need a connected client
     }
     
     deinit {
@@ -152,8 +152,12 @@ import SwiftMsgpack
         try await natsConnection.connect()
         self.isConnected = true
         
+        // Initialize JetStream after connection
+        self.jetStream = JetStreamContext(client: natsConnection)
+        
         if self.isDebug {
             print("✅ Connected to NATS server")
+            print("✅ JetStream context initialized")
         }
         
         // Get namespace
@@ -247,6 +251,10 @@ import SwiftMsgpack
             throw RelayError.notConnected("Not connected to NATS server")
         }
         
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
+        }
+        
         // Get namespace if not set
         if namespace == nil {
             namespace = try await getNamespace()
@@ -260,24 +268,41 @@ import SwiftMsgpack
         let streamName = "\(currentNamespace)_stream"
         
         if isDebug {
-            print("Checking stream existence: \(streamName)")
+            print("\n🔄 Stream Management:")
+            print("   Topic: \(topic)")
+            print("   Namespace: \(currentNamespace)")
+            print("   Stream Name: \(streamName)")
         }
         
         // Format the subject for this topic
         let formattedSubject = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
         
-        // Get JetStream context
-        let js = JetStreamContext(client: natsConnection)
+        if isDebug {
+            print("   Formatted Subject: \(formattedSubject)")
+        }
         
         do {
+            if isDebug {
+                print("   Checking for existing stream...")
+            }
+            
             // Try to get existing stream
             let stream = try await js.getStream(name: streamName)
+            
+            if isDebug {
+                print("   ✅ Stream exists")
+                print("   Current subjects: \(stream?.info.config.subjects ?? [])")
+            }
             
             // Get current subjects
             var subjects = stream?.info.config.subjects ?? []
             
             // Add new subject if not exists
             if !subjects.contains(formattedSubject) {
+                if isDebug {
+                    print("   Adding new subject to stream...")
+                }
+                
                 subjects.append(formattedSubject)
                 
                 // Update stream with new subjects
@@ -297,10 +322,17 @@ import SwiftMsgpack
                 try await js.updateStream(cfg: config)
                 
                 if isDebug {
-                    print("Updated stream with new subject: \(formattedSubject)")
+                    print("   ✅ Stream updated with new subject")
+                    print("   Updated subjects: \(subjects)")
                 }
+            } else if isDebug {
+                print("   ℹ️ Subject already exists in stream")
             }
         } catch {
+            if isDebug {
+                print("   ❌ Stream not found, creating new one...")
+            }
+            
             // Stream doesn't exist, create new one
             let config = StreamConfig(
                 name: streamName,
@@ -318,12 +350,19 @@ import SwiftMsgpack
             try await js.createStream(cfg: config)
             
             if isDebug {
-                print("Created new stream with subject: \(formattedSubject)")
+                print("   ✅ New stream created")
+                print("   Initial subjects: \([formattedSubject])")
             }
         }
         
         // Add to existing streams cache
         existingStreams.insert(streamName)
+        
+        if isDebug {
+            print("   📝 Added to existing streams cache")
+            print("   Current cached streams: \(existingStreams)")
+            print("✅ Stream management completed\n")
+        }
     }
     
     /// Update references to ensureStreamExists to use createOrGetStream
@@ -339,11 +378,15 @@ import SwiftMsgpack
         }
         messageTasks.removeAll()
         
+        // Clear JetStream context
+        self.jetStream = nil
+        
         try await natsConnection.close()
-        isConnected = false
+        self.isConnected = false
         
         if isDebug {
             print("Disconnected from NATS server")
+            print("JetStream context cleared")
         }
     }
     
@@ -397,6 +440,10 @@ import SwiftMsgpack
             return true
         }
         
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
+        }
+        
         // Get namespace if not set
         if namespace == nil {
             namespace = try await getNamespace()
@@ -423,7 +470,7 @@ import SwiftMsgpack
         
         // Publish using JetStream
         do {
-            let ackFuture = try await jetStream.publish(finalTopic, message: encodedMessage)
+            let ackFuture = try await js.publish(finalTopic, message: encodedMessage)
             let ack = try await ackFuture.wait()
             
             if isDebug {
