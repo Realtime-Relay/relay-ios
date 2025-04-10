@@ -18,44 +18,54 @@ struct RealtimeCLI {
         print("\n🔄 Connecting to NATS...")
         try await realtime.connect()
         
-        // Test publishing different message types
-        print("\n📤 Testing message publishing...")
+        // Test stream management
+        print("\n=== Testing Stream Management ===")
         
-        // Test 1: Publish string message
-        print("\nTest 1: Publishing string message")
-        let stringSuccess = try await realtime.publish(topic: "test.topic", message: "Hello, World!")
-        print("String message publish result: \(stringSuccess ? "✅ Success" : "❌ Failed")")
+        // Test 1: Create stream with first topic
+        print("\nTest 1: Creating stream with first topic")
+        let topic1 = "test.stream1"
+        let success1 = try await realtime.publish(topic: topic1, message: "First stream test")
+        print("Stream creation result: \(success1 ? "✅ Success" : "❌ Failed")")
         
-        // Test 2: Publish integer message
-        print("\nTest 2: Publishing integer message")
-        let intSuccess = try await realtime.publish(topic: "test.topic", message: 42)
-        print("Integer message publish result: \(intSuccess ? "✅ Success" : "❌ Failed")")
+        // Test 2: Add second topic to existing stream
+        print("\nTest 2: Adding second topic to existing stream")
+        let topic2 = "test.stream2"
+        let success2 = try await realtime.publish(topic: topic2, message: "Second stream test")
+        print("Stream update result: \(success2 ? "✅ Success" : "❌ Failed")")
         
-        // Test 3: Publish JSON message
-        print("\nTest 3: Publishing JSON message")
-        let jsonMessage: [String: Any] = [
-            "type": "test",
-            "data": ["key": "value"],
-            "timestamp": Int(Date().timeIntervalSince1970)
-        ]
-        let jsonSuccess = try await realtime.publish(topic: "test.topic", message: jsonMessage)
-        print("JSON message publish result: \(jsonSuccess ? "✅ Success" : "❌ Failed")")
+        // Test 3: Publish to existing topic
+        print("\nTest 3: Publishing to existing topic")
+        let success3 = try await realtime.publish(topic: topic1, message: "Second message to first topic")
+        print("Publish to existing topic result: \(success3 ? "✅ Success" : "❌ Failed")")
         
-        // Test 4: Publish offline message
+        // Test 4: Publish while disconnected
         print("\nTest 4: Publishing while disconnected")
         try await realtime.disconnect()
-        let offlineSuccess = try await realtime.publish(topic: "test.topic", message: "Offline message")
-        print("Offline message publish result: \(offlineSuccess ? "✅ Success (stored locally)" : "❌ Failed")")
+        let success4 = try await realtime.publish(topic: topic1, message: "Offline message")
+        print("Offline publish result: \(success4 ? "✅ Success (stored locally)" : "❌ Failed")")
         
-        // Reconnect to test message resending
-        print("\n🔄 Reconnecting to test message resending...")
+        // Test 5: Reconnect and verify stream persistence
+        print("\nTest 5: Reconnecting and verifying stream persistence")
         try await realtime.connect()
+        let success5 = try await realtime.publish(topic: topic1, message: "Post-reconnect message")
+        print("Post-reconnect publish result: \(success5 ? "✅ Success" : "❌ Failed")")
+        
+        // Test 6: Publish to multiple topics
+        print("\nTest 6: Publishing to multiple topics")
+        let topics = ["test.stream3", "test.stream4", "test.stream5"]
+        var allSuccess = true
+        for topic in topics {
+            let success = try await realtime.publish(topic: topic, message: "Multi-topic test")
+            print("  \(topic): \(success ? "✅ Success" : "❌ Failed")")
+            allSuccess = allSuccess && success
+        }
+        print("Multiple topic publish result: \(allSuccess ? "✅ All successful" : "❌ Some failed")")
         
         // Clean up
         print("\n🧹 Cleaning up...")
         try await realtime.disconnect()
         
-        print("\n✅ All publish tests completed")
+        print("\n✅ All stream tests completed")
     }
 }
 
