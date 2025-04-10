@@ -758,7 +758,7 @@ import SwiftMsgpack
                                 case .json(let data): return try JSONSerialization.jsonObject(with: data)
                                 }
                             }(),
-                            "start": decodedMessage.start
+                            "start": decodedMessage.start 
                         ]
                         messages.append(messageDict)
                         
