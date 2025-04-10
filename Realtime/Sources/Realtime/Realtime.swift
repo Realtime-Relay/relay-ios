@@ -656,22 +656,22 @@ import SwiftMsgpack
     /// - Throws: TopicValidationError if topic is invalid
     /// - Throws: RelayError.invalidDate if dates are invalid
     public func history(topic: String, startDate: Date, endDate: Date? = nil) async throws -> [[String: Any]] {
-        // Validate topic
+        // IOS-FUNC-08-2: Validate topic
         try TopicValidator.validate(topic)
         
-        // Validate start date
+        // IOS-FUNC-08-3: Validate start date
         guard startDate != Date.distantPast else {
             throw RelayError.invalidDate("Start date cannot be null or invalid")
         }
         
-        // Validate end date if provided
+        // IOS-FUNC-08-4: Validate end date if provided
         if let endDate = endDate {
             guard endDate > startDate else {
                 throw RelayError.invalidDate("End date must be after start date")
             }
         }
         
-        // Return empty array if not connected
+        // IOS-FUNC-08-5: Return empty array if not connected
         guard isConnected else {
             return []
         }
@@ -685,143 +685,99 @@ import SwiftMsgpack
             throw RelayError.invalidNamespace("Namespace not available")
         }
 
-        // Format stream name as namespace_stream
+        // IOS-FUNC-05-10 & IOS-FUNC-08-6: Format stream name and topic
         let streamName = "\(currentNamespace)_stream"
+        let formattedTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
         
         if isDebug {
             print("Using stream name for history: \(streamName)")
+            print("Formatted topic: \(formattedTopic)")
         }
 
         // Ensure stream exists before proceeding
         try await ensureStreamExists(for: topic)
 
-        // Create consumer configuration with minimal settings
-        let consumerConfig: [String: Any] = [
-            "stream_name": streamName,
-            "config": [
-                "name": "history_\(UUID().uuidString)",
-                "filter_subject": NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace),
-                "deliver_policy": "all",
-                "ack_policy": "none",  // Changed back to none for simplicity
-                "max_deliver": 1,
-                "num_replicas": 1
-            ]
-        ]
-        
-        if isDebug {
-            print("Creating consumer with config:", String(data: try JSONSerialization.data(withJSONObject: consumerConfig), encoding: .utf8) ?? "")
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
         }
-        
-        // Create consumer
-        let createResponse = try await natsConnection.request(
-            try JSONSerialization.data(withJSONObject: consumerConfig),
-            subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.CREATE.\(streamName)",
-            timeout: 10.0
+
+        // IOS-FUNC-08-7: Use JetStream to get messages
+        // Create a consumer config for message retrieval
+        let consumerName = "temp_consumer_\(UUID().uuidString)"
+        let consumerConfig = ConsumerConfig(
+            name: consumerName,
+            durable: nil,
+            deliverPolicy: .all,
+            ackPolicy: .none,
+            filterSubject: formattedTopic,  // This is the actual topic we published to
+            replayPolicy: .instant
         )
-        
+
         if isDebug {
-            if let data = createResponse.payload,
-               let str = String(data: data, encoding: .utf8) {
-                print("Consumer creation response:", str)
-            }
+            print("Creating consumer with config: \(consumerConfig)")
+            print("Using formatted topic for filtering: \(formattedTopic)")
         }
-        
-        guard let payload = createResponse.payload,
-              let response = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
-              let name = response["name"] as? String else {
-            throw RelayError.invalidResponse
-        }
-        
-        // Request messages in batches
+
+        // Create consumer and fetch messages
         var messages: [[String: Any]] = []
-        var hasMore = true
-        var batchCount = 1
-        
-        while hasMore && batchCount <= 10 { // Limit to 10 batches to prevent infinite loops
-            let batchRequest: [String: Any] = [
-                "batch": 10,  // Reduced batch size
-                "no_wait": true
-            ]
-            
-            let batchData = try JSONSerialization.data(withJSONObject: batchRequest)
-            
-            if isDebug {
-                print("Requesting batch \(batchCount) with config:", String(data: batchData, encoding: .utf8) ?? "")
-            }
-            
-            do {
-                let response = try await natsConnection.request(
-                    batchData,
-                    subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.MSG.NEXT.\(streamName).\(name)",
-                    timeout: 2.0  // Reduced timeout for faster failure
-                )
-                
-                if let data = response.payload {
-                    if isDebug {
-                        print("Batch response data:", String(data: data, encoding: .utf8) ?? "no data")
-                    }
-                    
-                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        // Check if this is a "no messages" response
-                        if let description = json["description"] as? String,
-                           description.contains("no messages") {
-                            if isDebug {
-                                print("No more messages available")
-                            }
-                            hasMore = false
-                            continue
-                        }
-                        
-                        // Check message timestamp
-                        if let timestamp = json["start"] as? Int {
-                            let messageDate = Date(timeIntervalSince1970: TimeInterval(timestamp))
-                            let isAfterStart = messageDate >= startDate
-                            let isBeforeEnd = endDate.map { messageDate <= $0 } ?? true
-                            
-                            if isAfterStart && isBeforeEnd {
-                                messages.append(json)
-                                if isDebug {
-                                    print("Added message with timestamp:", timestamp)
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    if isDebug {
-                        print("No payload in batch response")
-                    }
-                    hasMore = false
-                }
-            } catch {
-                if isDebug {
-                    print("Error requesting batch: \(error)")
-                }
-                hasMore = false
-            }
-            
-            batchCount += 1
-            try await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds delay
-        }
-        
-        // Delete the consumer
         do {
-            let deleteResponse = try await natsConnection.request(
-                Data(),
-                subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.DELETE.\(streamName).\(name)",
-                timeout: 5.0
-            )
+            let consumer = try await js.createConsumer(stream: streamName, cfg: consumerConfig)
             
-            if isDebug {
-                if let data = deleteResponse.payload,
-                   let str = String(data: data, encoding: .utf8) {
-                    print("Successfully deleted consumer: \(name)")
-                    print("Delete response:", str)
+            // Fetch messages in batches
+            let fetchResult = try await consumer.fetch(batch: 100, expires: 5)
+            
+            for try await msg in fetchResult {
+                // Access the message payload correctly
+                guard let payload = msg.payload else {
+                    if isDebug {
+                        print("Message payload is nil")
+                    }
+                    continue
+                }
+                
+                // Decode MessagePack data
+                let decoder = MsgPackDecoder()
+                if let decodedMessage = try? decoder.decode(RealtimeMessage.self, from: payload) {
+                    // Convert message timestamp to Date for comparison
+                    let messageDate = Date(timeIntervalSince1970: TimeInterval(decodedMessage.start))
+                    
+                    // Check if message is within the requested time range
+                    let isAfterStart = messageDate >= startDate
+                    let isBeforeEnd = endDate.map { messageDate <= $0 } ?? true
+                    
+                    if isAfterStart && isBeforeEnd {
+                        // Convert message to dictionary format
+                        let messageDict: [String: Any] = [
+                            "client_id": decodedMessage.clientId,
+                            "id": decodedMessage.id,
+                            "room": decodedMessage.room,
+                            "message": try {
+                                switch decodedMessage.message {
+                                case .string(let str): return str
+                                case .integer(let int): return int
+                                case .json(let data): return try JSONSerialization.jsonObject(with: data)
+                                }
+                            }(),
+                            "start": decodedMessage.start
+                        ]
+                        messages.append(messageDict)
+                        
+                        if isDebug {
+                            print("Added message: \(messageDict)")
+                        }
+                    }
                 }
             }
+            
+            // Clean up the consumer
+            try await js.deleteConsumer(stream: streamName, name: consumerName)
+            
         } catch {
             if isDebug {
-                print("Error deleting consumer: \(error)")
+                print("Error fetching messages: \(error)")
             }
+            // IOS-FUNC-08-10: Return empty array if no messages found
+            return []
         }
         
         if isDebug {
