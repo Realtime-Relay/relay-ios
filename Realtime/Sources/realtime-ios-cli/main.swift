@@ -3,7 +3,10 @@ import Realtime
 
 struct RealtimeCLI {
     static func main() async throws {
-        print("\n=== Testing CONNECTED Event ===")
+        print("\n=== Testing CONNECTED Event Handling ===")
+        print(
+            "This test verifies that the CONNECTED event listener is executed when the SDK connects to the backend"
+        )
 
         // Initialize Realtime with production credentials
         let realtime = try Realtime(
@@ -19,6 +22,8 @@ struct RealtimeCLI {
         class ConnectedEventListener: MessageListener {
             var eventReceived = false
             var eventData: [String: Any]?
+            var eventTimestamp: Int?
+            var eventNamespace: String?
 
             func onMessage(_ message: [String: Any]) {
                 print("\n=== CONNECTED Event Received ===")
@@ -35,20 +40,23 @@ struct RealtimeCLI {
                     return
                 }
 
+                // Store event details
+                eventReceived = true
+                eventData = message
+                eventTimestamp = timestamp
+                eventNamespace = namespace
+
                 print("Event ID: \(id)")
                 print("Status: \(status)")
                 print("Namespace: \(namespace)")
                 print("Timestamp: \(timestamp)")
                 print("=== End of CONNECTED Event ===\n")
-
-                eventReceived = true
-                eventData = message
             }
         }
 
         let connectedListener = ConnectedEventListener()
 
-        // Subscribe to the CONNECTED event
+        // Subscribe to the CONNECTED event BEFORE connecting
         print("\nSubscribing to CONNECTED event...")
         try await realtime.on(topic: SystemEvent.connected.rawValue, listener: connectedListener)
 
@@ -63,6 +71,25 @@ struct RealtimeCLI {
         // Verify the event was received
         if connectedListener.eventReceived {
             print("✅ CONNECTED event received successfully")
+
+            // Verify event data
+            if let timestamp = connectedListener.eventTimestamp {
+                let currentTime = Int(Date().timeIntervalSince1970)
+                let timeDiff = abs(currentTime - timestamp)
+                if timeDiff <= 2 {
+                    print("✅ Event timestamp is valid (within 2 seconds)")
+                } else {
+                    print("❌ Event timestamp is too old (difference: \(timeDiff) seconds)")
+                }
+            }
+
+            if let namespace = connectedListener.eventNamespace {
+                if namespace == "relay-internal-ios-dev" {
+                    print("✅ Event namespace is correct")
+                } else {
+                    print("❌ Event namespace is incorrect: \(namespace)")
+                }
+            }
         } else {
             print("❌ CONNECTED event not received")
         }
@@ -80,7 +107,13 @@ Task {
     do {
         try await RealtimeCLI.main()
     } catch {
-        print("❌ Error running tests: \(error)")
+        print("❌ Error running tests:")
+        print("   Error type: \(type(of: error))")
+        print("   Description: \(error)")
+        print("   Localized: \(error.localizedDescription)")
+        if let relayError = error as? RelayError {
+            print("   RelayError: \(relayError)")
+        }
     }
     exit(0)
 }

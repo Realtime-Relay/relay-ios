@@ -12,7 +12,7 @@ public enum TopicValidationError: LocalizedError {
     case containsSpaces
     case containsStar
     case systemTopicPublish
-    
+
     public var errorDescription: String? {
         switch self {
         case .emptyTopic:
@@ -28,25 +28,27 @@ public enum TopicValidationError: LocalizedError {
 }
 
 public struct TopicValidator {
-    public static func validate(_ topic: String, forPublishing: Bool = false) throws {
+    public static func validate(
+        _ topic: String, forPublishing: Bool = false, isInternalPublish: Bool = false
+    ) throws {
         // Check if topic is empty
         guard !topic.isEmpty else {
             throw TopicValidationError.emptyTopic
         }
-        
+
         // Check for spaces
         guard !topic.contains(" ") else {
             throw TopicValidationError.containsSpaces
         }
-        
+
         // Check for star character
         guard !topic.contains("*") else {
             throw TopicValidationError.containsStar
         }
-        
-        // Only check system topics for publishing
-        if forPublishing && SystemEvent.reservedTopics.contains(topic) {
+
+        // Only check system topics for publishing from outside the SDK
+        if forPublishing && !isInternalPublish && SystemEvent.reservedTopics.contains(topic) {
             throw TopicValidationError.systemTopicPublish
         }
     }
-} 
+}

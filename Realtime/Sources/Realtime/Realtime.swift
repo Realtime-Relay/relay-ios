@@ -35,6 +35,8 @@ import SwiftMsgpack
     private let topicPrefix: String = "relay_stream"
 
     private var isResendingMessages = false
+    private var wasUnexpectedDisconnect = false
+    private var wasManualDisconnect = false
 
     // MARK: - Initialization
 
@@ -177,25 +179,38 @@ import SwiftMsgpack
             print("✅ Retrieved namespace: \(namespace)")
         }
 
-        // Subscribe to SDK topics
+        // Subscribe to topics
         try await subscribeToTopics()
 
-        // Trigger CONNECTED event
-        if let listener = messageListeners[SystemEvent.connected.rawValue] {
+        // Set connection status
+        isConnected = true
+
+        // Execute CONNECTED event listener if it exists
+        if let connectedListener = messageListeners[SystemEvent.connected.rawValue] {
             let connectedEvent: [String: Any] = [
                 "id": UUID().uuidString,
                 "message": [
                     "status": "connected",
                     "namespace": namespace,
-                    "timestamp": Int(Date().timeIntervalSince1970)
-                ]
+                    "timestamp": Int(Date().timeIntervalSince1970),
+                ],
             ]
-            listener.onMessage(connectedEvent)
-            
+            connectedListener.onMessage(connectedEvent)
+
             if isDebug {
-                print("✅ Triggered CONNECTED event")
+                print("✅ Executed CONNECTED event listener")
             }
         }
+
+        // Also publish the event for other subscribers
+        _ = try await publish(
+            topic: SystemEvent.connected.rawValue,
+            message: [
+                "status": "connected",
+                "namespace": namespace as Any,
+                "timestamp": Int(Date().timeIntervalSince1970),
+            ]
+        )
 
         if self.isDebug {
             print("✅ Connected and ready")
@@ -204,21 +219,46 @@ import SwiftMsgpack
 
     /// Disconnect from the NATS server
     public func disconnect() async throws {
+        guard isConnected else {
+            if isDebug {
+                print("⚠️ Already disconnected")
+            }
+            return
+        }
+
+        // Set manual disconnect flag
+        wasManualDisconnect = true
+
         // Cancel all message handling tasks
         for task in messageTasks.values {
             task.cancel()
         }
         messageTasks.removeAll()
 
-        // Clear JetStream context
-        self.jetStream = nil
+        // Publish DISCONNECTED event before closing connection
+        if let namespace = namespace {
+            _ = try await publish(
+                topic: SystemEvent.disconnected.rawValue,
+                message: [
+                    "status": "disconnected",
+                    "namespace": namespace as Any,
+                    "timestamp": Int(Date().timeIntervalSince1970),
+                ]
+            )
+        }
 
+        // Clear JetStream context
+        jetStream = nil
+
+        // Disconnect from NATS
         try await natsConnection.close()
-        self.isConnected = false
+
+        // Set connection status
+        isConnected = false
 
         if isDebug {
-            print("Disconnected from NATS server")
-            print("JetStream context cleared")
+            print("✅ Disconnected from NATS server")
+            print("✅ JetStream context cleared")
         }
     }
 
@@ -229,8 +269,11 @@ import SwiftMsgpack
     /// - Throws: TopicValidationError if topic is invalid
     /// - Throws: RelayError.invalidPayload if message is invalid
     public func publish(topic: String, message: Any) async throws -> Bool {
-        // Validate topic for publishing
-        try TopicValidator.validate(topic, forPublishing: true)
+        // Special handling for system topics
+        let isSystemTopic = SystemEvent.reservedTopics.contains(topic)
+        
+        // Validate topic for publishing (skip validation for system topics)
+        try TopicValidator.validate(topic, forPublishing: true, isInternalPublish: isSystemTopic)
 
         // Create message content
         let messageContent: RealtimeMessage.MessageContent
@@ -255,8 +298,8 @@ import SwiftMsgpack
             start: Int(Date().timeIntervalSince1970)
         )
 
-        // If not connected, store message locally
-        if !isConnected {
+        // If not connected, store message locally (only for non-system topics)
+        if !isConnected && !isSystemTopic {
             let messageDict: [String: Any] = [
                 "client_id": finalMessage.clientId,
                 "id": finalMessage.id,
@@ -273,8 +316,10 @@ import SwiftMsgpack
             return false
         }
 
-        // If connected, try to resend any stored messages first
-        try await resendStoredMessages()
+        // If connected, try to resend any stored messages first (only for non-system topics)
+        if !isSystemTopic {
+            try await resendStoredMessages()
+        }
 
         guard let js = jetStream else {
             throw RelayError.notConnected("JetStream context not initialized")
@@ -284,8 +329,10 @@ import SwiftMsgpack
             throw RelayError.invalidNamespace("Namespace not available - must be connected first")
         }
 
-        // Ensure stream exists
-        try await ensureStreamExists(for: topic)
+        // Ensure stream exists (only for non-system topics)
+        if !isSystemTopic {
+            try await ensureStreamExists(for: topic)
+        }
 
         // Encode the message with MessagePack
         let encoder = MsgPackEncoder()
@@ -984,5 +1031,40 @@ import SwiftMsgpack
     /// Update references to ensureStreamExists to use createOrGetStream
     private func ensureStreamExists(for topic: String) async throws {
         try await createOrGetStream(for: topic)
+    }
+
+    private func onReconnected() async throws {
+        if isDebug {
+            print("🔄 Reconnected to NATS server")
+        }
+
+        // Only resend messages if this was an automatic reconnection after an unexpected disconnect
+        if wasUnexpectedDisconnect {
+            if isDebug {
+                print("🔄 Resending stored messages after unexpected disconnect...")
+            }
+
+            // Resend stored messages
+            try await resendStoredMessages()
+
+            // Reset the flag
+            wasUnexpectedDisconnect = false
+        }
+
+        // Subscribe to topics again
+        try await subscribeToTopics()
+
+        // Set connection status
+        isConnected = true
+
+        // Trigger reconnected event
+        _ = try await publish(
+            topic: SystemEvent.reconnected.rawValue,
+            message: [
+                "status": "reconnected",
+                "namespace": namespace as Any,
+                "timestamp": Int(Date().timeIntervalSince1970),
+            ]
+        )
     }
 }
