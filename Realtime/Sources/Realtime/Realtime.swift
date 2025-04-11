@@ -303,13 +303,6 @@ import SwiftMsgpack
         let config = StreamConfig(
             name: streamName,
             subjects: newSubjects,
-            retention: .limits,
-            maxConsumers: -1,
-            maxMsgs: -1,
-            maxBytes: -1,
-            discard: .old,
-            maxAge: NanoTimeInterval(0),
-            storage: .file,
             replicas: 3
         )
 
@@ -318,12 +311,12 @@ import SwiftMsgpack
             if isDebug {
                 print("   Creating new stream...")
             }
-            try await js.createStream(cfg: config)
+            _ = try await js.createStream(cfg: config)
         } else if !currentSubjects.contains(formattedSubject) {
             if isDebug {
                 print("   Updating stream with new subject...")
             }
-            try await js.updateStream(cfg: config)
+            _ = try await js.updateStream(cfg: config)
         }
 
         // Add to initialized topics cache

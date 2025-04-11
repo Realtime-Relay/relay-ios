@@ -71,9 +71,6 @@ extension Realtime {
         // Create a consumer
         let consumerConfig: [String: Any] = [
             "stream_name": stream,
-            "deliver_policy": "all",
-            "ack_policy": "explicit",
-            "max_deliver": 1,
             "filter_subject": subject ?? ">",
             "num_replicas": 3,
         ]
