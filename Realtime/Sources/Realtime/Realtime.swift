@@ -334,105 +334,8 @@ import SwiftMsgpack
                 subscriptions[topic] = subscription
 
                 // Start message handling task
-                let task = Task { [weak self] in
-                    guard let self = self else { return }
-
-                    do {
-                        for try await message in subscription {
-                            guard let data = message.payload else {
-                                if self.isDebug {
-                                    print("Message payload is nil")
-                                }
-                                continue
-                            }
-
-                            do {
-                                // Decode the MessagePack data
-                                let decoder = MsgPackDecoder()
-                                let decodedMessage = try decoder.decode(
-                                    RealtimeMessage.self, from: data)
-
-                                // Check if message should be processed
-                                // Only process if client_id doesn't match and room matches
-                                guard decodedMessage.clientId != self.clientId else {
-                                    if self.isDebug {
-                                        print("Skipping message from self: \(decodedMessage.id)")
-                                    }
-                                    continue
-                                }
-
-                                // Create the JSON object with required fields
-                                let messageJson: [String: Any] = [
-                                    "id": decodedMessage.id,
-                                    "message": try {
-                                        switch decodedMessage.message {
-                                        case .string(let string):
-                                            return string
-                                        case .integer(let integer):
-                                            return integer
-                                        case .json(let data):
-                                            return try JSONSerialization.jsonObject(with: data)
-                                        }
-                                    }(),
-                                ]
-
-                                if let listener = self.messageListeners[topic] {
-                                    // Format the room to match the topic format
-                                    let formattedRoom = decodedMessage.room.replacingOccurrences(
-                                        of: "_", with: ".")
-
-                                    // Extract the raw topic name from the formatted NATS subject
-                                    let rawTopic =
-                                        finalTopic.split(separator: "_").last?.replacingOccurrences(
-                                            of: "_", with: ".") ?? topic
-
-                                    // Compare formatted room with raw topic name
-                                    if formattedRoom == rawTopic {
-                                        // Acknowledge the message before processing
-                                        if let replySubject = message.replySubject {
-                                            try await natsConnection.publish(
-                                                Data(), subject: replySubject, reply: nil,
-                                                headers: nil)
-                                            if self.isDebug {
-                                                print("   ✅ Message acknowledged before callback")
-                                            }
-                                        }
-
-                                        listener.onMessage(messageJson)
-
-                                        if self.isDebug {
-                                            print("   ✅ Message processed by callback")
-                                        }
-                                    } else if self.isDebug {
-                                        print(
-                                            "Room mismatch - message room: \(formattedRoom), expected: \(rawTopic)"
-                                        )
-                                    }
-                                } else if self.isDebug {
-                                    print("No listener found for topic: \(topic)")
-                                }
-                            } catch {
-                                if self.isDebug {
-                                    print("Error processing message: \(error)")
-                                }
-                                // Send negative acknowledgment by not responding
-                                if self.isDebug {
-                                    print("   ❌ Message not acknowledged due to error")
-                                }
-                            }
-                        }
-                    } catch {
-                        if self.isDebug {
-                            print("Error handling messages for topic \(topic): \(error)")
-                        }
-                        // Clean up resources on error
-                        self.subscriptions.removeValue(forKey: topic)
-                        self.messageTasks.removeValue(forKey: topic)
-                    }
-                }
-
-                // Store task reference
-                messageTasks[topic] = task
+                handleJetStreamMessages(
+                    topic: topic, subscription: subscription, finalTopic: finalTopic)
 
                 if isDebug {
                     print("✅ Subscribed to topic: \(topic)")
@@ -633,6 +536,112 @@ import SwiftMsgpack
     }
 
     // MARK: - Privates
+    
+    /// Handle incoming JetStream messages for a topic
+    /// - Parameters:
+    ///   - topic: The topic being subscribed to
+    ///   - subscription: The NATS subscription
+    ///   - finalTopic: The formatted topic with namespace
+    private func handleJetStreamMessages(
+        topic: String, subscription: NatsSubscription, finalTopic: String
+    ) {
+        let task = Task { [weak self] in
+            guard let self = self else { return }
+
+            do {
+                for try await message in subscription {
+                    guard let data = message.payload else {
+                        if self.isDebug {
+                            print("Message payload is nil")
+                        }
+                        continue
+                    }
+
+                    do {
+                        // Decode the MessagePack data
+                        let decoder = MsgPackDecoder()
+                        let decodedMessage = try decoder.decode(RealtimeMessage.self, from: data)
+
+                        // Check if message should be processed
+                        guard decodedMessage.clientId != self.clientId else {
+                            if self.isDebug {
+                                print("Skipping message from self: \(decodedMessage.id)")
+                            }
+                            continue
+                        }
+
+                        // Create the JSON object with required fields
+                        let messageJson: [String: Any] = [
+                            "id": decodedMessage.id,
+                            "message": try {
+                                switch decodedMessage.message {
+                                case .string(let string):
+                                    return string
+                                case .integer(let integer):
+                                    return integer
+                                case .json(let data):
+                                    return try JSONSerialization.jsonObject(with: data)
+                                }
+                            }(),
+                        ]
+
+                        if let listener = self.messageListeners[topic] {
+                            // Format the room to match the topic format
+                            let formattedRoom = decodedMessage.room.replacingOccurrences(
+                                of: "_", with: ".")
+
+                            // Extract the raw topic name from the formatted NATS subject
+                            let rawTopic =
+                                finalTopic.split(separator: "_").last?.replacingOccurrences(
+                                    of: "_", with: ".") ?? topic
+
+                            // Compare formatted room with raw topic name
+                            if formattedRoom == rawTopic {
+                                // Acknowledge the message before processing
+                                if let replySubject = message.replySubject {
+                                    try await self.natsConnection.publish(
+                                        Data(), subject: replySubject, reply: nil, headers: nil)
+                                    if self.isDebug {
+                                        print("   ✅ Message acknowledged before callback")
+                                    }
+                                }
+
+                                listener.onMessage(messageJson)
+
+                                if self.isDebug {
+                                    print("   ✅ Message processed by callback")
+                                }
+                            } else if self.isDebug {
+                                print(
+                                    "Room mismatch - message room: \(formattedRoom), expected: \(rawTopic)"
+                                )
+                            }
+                        } else if self.isDebug {
+                            print("No listener found for topic: \(topic)")
+                        }
+                    } catch {
+                        if self.isDebug {
+                            print("Error processing message: \(error)")
+                        }
+                        // Send negative acknowledgment by not responding
+                        if self.isDebug {
+                            print("   ❌ Message not acknowledged due to error")
+                        }
+                    }
+                }
+            } catch {
+                if self.isDebug {
+                    print("Error handling messages for topic \(topic): \(error)")
+                }
+                // Clean up resources on error
+                self.subscriptions.removeValue(forKey: topic)
+                self.messageTasks.removeValue(forKey: topic)
+            }
+        }
+
+        // Store task reference
+        messageTasks[topic] = task
+    }
 
     /// Subscribe to all pending topics that were initialized before connection
     private func subscribeToTopics() async throws {
@@ -660,113 +669,8 @@ import SwiftMsgpack
                         subscriptions[topic] = subscription
 
                         // Start message handling task
-                        let task = Task { [weak self] in
-                            guard let self = self else { return }
-
-                            do {
-                                for try await message in subscription {
-                                    guard let data = message.payload else {
-                                        if self.isDebug {
-                                            print("Message payload is nil")
-                                        }
-                                        continue
-                                    }
-
-                                    do {
-                                        // Decode the MessagePack data
-                                        let decoder = MsgPackDecoder()
-                                        let decodedMessage = try decoder.decode(
-                                            RealtimeMessage.self, from: data)
-
-                                        // Check if message should be processed
-                                        // IOS-FUNC-06-1: Only process if client_id doesn't match and room matches
-                                        guard decodedMessage.clientId != self.clientId else {
-                                            if self.isDebug {
-                                                print(
-                                                    "Skipping message from self: \(decodedMessage.id)"
-                                                )
-                                            }
-                                            continue
-                                        }
-
-                                        // Create the JSON object with required fields
-                                        let messageJson: [String: Any] = [
-                                            "id": decodedMessage.id,
-                                            "message": try {
-                                                switch decodedMessage.message {
-                                                case .string(let string):
-                                                    return string
-                                                case .integer(let integer):
-                                                    return integer
-                                                case .json(let data):
-                                                    return try JSONSerialization.jsonObject(
-                                                        with: data)
-                                                }
-                                            }(),
-                                        ]
-
-                                        // Execute the callback with the JSON object if the topic matches
-                                        // Note: We use topic for lookup since that's what we subscribed to
-                                        if let listener = self.messageListeners[topic] {
-                                            // Format the room to match the topic format
-                                            let formattedRoom = decodedMessage.room
-                                                .replacingOccurrences(
-                                                    of: "_", with: ".")
-
-                                            // Extract the raw topic name from the formatted NATS subject
-                                            let rawTopic =
-                                                finalTopic.split(separator: "_").last?
-                                                .replacingOccurrences(of: "_", with: ".") ?? topic
-
-                                            // Compare formatted room with raw topic name
-                                            if formattedRoom == rawTopic {
-                                                // Acknowledge the message before processing
-                                                if let replySubject = message.replySubject {
-                                                    try await natsConnection.publish(
-                                                        Data(), subject: replySubject, reply: nil,
-                                                        headers: nil)
-                                                    if self.isDebug {
-                                                        print(
-                                                            "   ✅ Message acknowledged before callback"
-                                                        )
-                                                    }
-                                                }
-
-                                                listener.onMessage(messageJson)
-
-                                                if self.isDebug {
-                                                    print("   ✅ Message processed by callback")
-                                                }
-                                            } else if self.isDebug {
-                                                print(
-                                                    "Room mismatch - message room: \(formattedRoom), expected: \(rawTopic)"
-                                                )
-                                            }
-                                        } else if self.isDebug {
-                                            print("No listener found for topic: \(topic)")
-                                        }
-                                    } catch {
-                                        if self.isDebug {
-                                            print("Error processing message: \(error)")
-                                        }
-                                        // Send negative acknowledgment by not responding
-                                        if self.isDebug {
-                                            print("   ❌ Message not acknowledged due to error")
-                                        }
-                                    }
-                                }
-                            } catch {
-                                if self.isDebug {
-                                    print("Error handling messages for topic \(topic): \(error)")
-                                }
-                                // Clean up resources on error
-                                self.subscriptions.removeValue(forKey: topic)
-                                self.messageTasks.removeValue(forKey: topic)
-                            }
-                        }
-
-                        // Store task reference
-                        messageTasks[topic] = task
+                        handleJetStreamMessages(
+                            topic: topic, subscription: subscription, finalTopic: finalTopic)
 
                         if isDebug {
                             print("✅ Subscribed to pending topic: \(topic)")
