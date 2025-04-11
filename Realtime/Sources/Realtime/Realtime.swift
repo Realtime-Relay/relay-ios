@@ -34,6 +34,8 @@ import SwiftMsgpack
     private let streamName: String = "default_stream"
     private let topicPrefix: String = "relay_stream"
 
+    private var isResendingMessages = false
+
     // MARK: - Initialization
 
     /// Initialize a new Realtime instance with authentication
@@ -177,9 +179,6 @@ import SwiftMsgpack
 
         // Subscribe to SDK topics
         try await subscribeToTopics()
-
-        // Resend any stored messages after successful connection
-        try await resendStoredMessages()
 
         if self.isDebug {
             print("✅ Connected and ready")
@@ -404,6 +403,9 @@ import SwiftMsgpack
             return false
         }
 
+        // If connected, try to resend any stored messages first
+        try await resendStoredMessages()
+
         guard let js = jetStream else {
             throw RelayError.notConnected("JetStream context not initialized")
         }
@@ -446,35 +448,88 @@ import SwiftMsgpack
         }
     }
 
-    func resendStoredMessages() async throws {
+    private func resendStoredMessages() async throws {
+        // Prevent recursive calls
+        guard !isResendingMessages else { return }
+        isResendingMessages = true
+        defer { isResendingMessages = false }
+
         let storedMessages = messageStorage.getStoredMessages()
-        if storedMessages.isEmpty { return }
+        guard !storedMessages.isEmpty else { return }
 
-        print("📤 Resending \(storedMessages.count) stored messages...")
+        if isDebug {
+            print("📤 Resending \(storedMessages.count) stored messages...")
+        }
 
-        for message in storedMessages {
-            if let messageId = message.message["id"] as? String {
-                // Try to publish the message
-                let success = try await publish(topic: message.topic, message: message.message)
+        // Group messages by topic for batch publishing
+        let messagesByTopic = Dictionary(grouping: storedMessages) { $0.topic }
+
+        for (topic, messages) in messagesByTopic {
+            do {
+                // Create a batch of messages for this topic
+                let messageBatch = messages.map { message in
+                    (message.message, message.message["id"] as? String)
+                }
+
+                // Try to publish all messages for this topic at once
+                let success = try await publishBatch(topic: topic, messages: messageBatch)
+
                 if success {
-                    print("✅ Resent message to topic: \(message.topic)")
-                    messageStorage.updateMessageStatus(
-                        topic: message.topic, messageId: messageId, resent: true)
+                    // Remove all successfully published messages
+                    for message in messages {
+                        if let messageId = message.message["id"] as? String {
+                            messageStorage.removeMessage(topic: topic, messageId: messageId)
+                        }
+                    }
+                    if isDebug {
+                        print(
+                            "✅ Successfully resent \(messages.count) messages for topic: \(topic)")
+                    }
+                } else {
+                    // Mark all messages as resent to prevent repeated attempts
+                    for message in messages {
+                        if let messageId = message.message["id"] as? String {
+                            messageStorage.updateMessageStatus(
+                                topic: topic, messageId: messageId, resent: true)
+                        }
+                    }
+                    if isDebug {
+                        print("❌ Failed to resend messages for topic: \(topic)")
+                    }
+                }
+            } catch {
+                // Mark all messages as resent to prevent repeated attempts
+                for message in messages {
+                    if let messageId = message.message["id"] as? String {
+                        messageStorage.updateMessageStatus(
+                            topic: topic, messageId: messageId, resent: true)
+                    }
+                }
+                if isDebug {
+                    print("❌ Error resending messages for topic: \(topic), error: \(error)")
                 }
             }
         }
+    }
 
-        // Get final message statuses and notify listeners
-        let messageStatuses = messageStorage.getMessageStatuses()
-        if !messageStatuses.isEmpty {
-            let statusMessage: [String: Any] = ["messages": messageStatuses]
-            if let listener = messageListeners[SystemEvent.messageResend.rawValue] {
-                listener.onMessage(statusMessage)
+    private func publishBatch(topic: String, messages: [(message: [String: Any], id: String?)])
+        async throws -> Bool
+    {
+        do {
+            // Publish all messages in sequence
+            for (message, _) in messages {
+                let success = try await publish(topic: topic, message: message)
+                if !success {
+                    return false
+                }
             }
+            return true
+        } catch {
+            if isDebug {
+                print("❌ Error publishing batch: \(error)")
+            }
+            return false
         }
-
-        // Clear successfully resent messages
-        messageStorage.clearStoredMessages()
     }
 
     /// Subscribe to a topic with a message listener
@@ -484,11 +539,6 @@ import SwiftMsgpack
     /// - Throws: TopicValidationError if topic is invalid
     public func on(topic: String, listener: MessageListener) async throws {
         try TopicValidator.validate(topic)
-
-        // Validate listener is not null
-        guard listener != nil else {
-            throw RelayError.invalidListener("Listener cannot be null")
-        }
 
         // Store the listener
         messageListeners[topic] = listener

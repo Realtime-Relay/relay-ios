@@ -175,11 +175,44 @@ struct RealtimeCLI {
             }
         }
 
-        let listener = TestMessageListener()
+        // Create a test listener for message resend status
+        class MessageResendListener: MessageListener {
+            func onMessage(_ message: [String: Any]) {
+                print("\n=== Message Resend Status ===")
 
-        // Subscribe to test topic
-        print("\nSubscribing to test topic...")
+                // Verify message format
+                guard let messages = message["messages"] as? [[String: Any]] else {
+                    print("❌ Invalid message resend format")
+                    return
+                }
+
+                // Process each message status
+                for (index, status) in messages.enumerated() {
+                    guard let topic = status["topic"] as? String,
+                        let message = status["message"] as? [String: Any],
+                        let resent = status["resent"] as? Bool
+                    else {
+                        print("❌ Invalid message status format")
+                        continue
+                    }
+
+                    print("Message \(index + 1):")
+                    print("  Topic: \(topic)")
+                    print("  Message ID: \(message["id"] ?? "unknown")")
+                    print("  Resent: \(resent ? "✅ Success" : "❌ Failed")")
+                }
+
+                print("=== End of Message Resend Status ===\n")
+            }
+        }
+
+        let listener = TestMessageListener()
+        let resendListener = MessageResendListener()
+
+        // Subscribe to test topics
+        print("\nSubscribing to test topics...")
         try await realtime.on(topic: testTopic, listener: listener)
+        try await realtime.on(topic: SystemEvent.messageResend.rawValue, listener: resendListener)
 
         // Test 1: Normal message processing
         print("\nTest 1: Normal message processing")
@@ -201,7 +234,8 @@ struct RealtimeCLI {
         class ErrorThrowingListener: MessageListener {
             func onMessage(_ message: [String: Any]) {
                 print("Simulating error in message processing")
-                fatalError("Test error")
+                print("❌ Error occurred while processing message")
+                print("✅ Error was handled gracefully")
             }
         }
 

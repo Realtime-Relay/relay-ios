@@ -17,7 +17,8 @@ public enum RelayError: LocalizedError {
     case invalidNamespace(String)
     case subscriptionFailed(String)
     case unsubscribeFailed(String)
-    
+    case invalidListener(String)
+
     public var errorDescription: String? {
         switch self {
         case .invalidCredentials(let message):
@@ -38,6 +39,8 @@ public enum RelayError: LocalizedError {
             return "Subscription failed: \(message)"
         case .unsubscribeFailed(let message):
             return "Unsubscribe failed: \(message)"
+        case .invalidListener(let message):
+            return "Invalid listener: \(message)"
         }
     }
-} 
+}
