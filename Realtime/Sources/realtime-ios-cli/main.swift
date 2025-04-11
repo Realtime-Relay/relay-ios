@@ -22,6 +22,12 @@ struct RealtimeCLI {
         // Test stream management
         print("\n=== Testing Stream Management ===")
 
+        // Verify stream name format
+        print("\nVerifying stream name format...")
+        let expectedStreamName = "relay-internal-ios-dev_stream"
+        print("Expected stream name: \(expectedStreamName)")
+        print("Note: Stream name is managed internally by the Realtime class")
+
         // Test 1: Publish to a new topic (should create stream)
         print("\nTest 1: Publishing to new topic")
         let topic1 = "test.stream1"
@@ -141,6 +147,7 @@ struct RealtimeCLI {
         class TestMessageListener: MessageListener {
             var receivedMessages: [[String: Any]] = []
             var ackBeforeCallback = false
+            var expectedClientId: String?
 
             func setAcknowledged() {
                 ackBeforeCallback = true
@@ -285,6 +292,85 @@ struct RealtimeCLI {
         for message in formatTestMessages {
             _ = try await realtime.publish(topic: formatTestTopic, message: message)
             try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
+        }
+
+        // Test 4: Message filtering by client_id and room
+        print("\nTest 4: Message filtering by client_id and room")
+        let filterTestTopic = "test.filter"
+
+        class FilterTestListener: MessageListener {
+            var receivedMessages: [[String: Any]] = []
+            var expectedRoom: String
+
+            init(expectedRoom: String) {
+                self.expectedRoom = expectedRoom
+            }
+
+            func onMessage(_ message: [String: Any]) {
+                receivedMessages.append(message)
+                print("\n=== Message Received ===")
+                print("Room: \(expectedRoom)")
+                print("Message ID: \(message["id"] ?? "unknown")")
+                print("Message Content: \(message["message"] ?? "none")")
+                print("Client ID: \(message["client_id"] ?? "unknown")")
+                print("Timestamp: \(message["start"] ?? "unknown")")
+                print("=== End Message ===\n")
+            }
+        }
+
+        // Create listeners for different rooms
+        let filterListener1 = FilterTestListener(expectedRoom: filterTestTopic)
+        let filterListener2 = FilterTestListener(expectedRoom: "test.filter2")
+
+        // Subscribe to different rooms
+        print("\nSubscribing to rooms...")
+        print("Subscribing to room: \(filterTestTopic)")
+        try await realtime.on(topic: filterTestTopic, listener: filterListener1)
+        print("Subscribing to room: test.filter2")
+        try await realtime.on(topic: "test.filter2", listener: filterListener2)
+
+        // Clear previous messages
+        filterListener1.receivedMessages.removeAll()
+        filterListener2.receivedMessages.removeAll()
+
+        // Publish messages to different rooms
+        print("\nPublishing test messages...")
+        print("Publishing to room: \(filterTestTopic)")
+        let publishResult1 = try await realtime.publish(
+            topic: filterTestTopic, message: "Message for room 1")
+        print("Message 1 published: \(publishResult1 ? "✅ Success" : "❌ Failed")")
+
+        print("Publishing to room: test.filter2")
+        let publishResult2 = try await realtime.publish(
+            topic: "test.filter2", message: "Message for room 2")
+        print("Message 2 published: \(publishResult2 ? "✅ Success" : "❌ Failed")")
+
+        // Wait for messages to be processed
+        print("\nWaiting for messages to be processed...")
+        try await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
+
+        // Verify messages were received by correct listeners
+        print("\nVerifying message filtering...")
+        print("\nListener 1 (\(filterTestTopic)):")
+        print("Expected messages: 1")
+        print("Received messages: \(filterListener1.receivedMessages.count)")
+        if filterListener1.receivedMessages.count == 1 {
+            print("✅ Listener 1 received correct number of messages")
+        } else {
+            print(
+                "❌ Listener 1 received incorrect number of messages: \(filterListener1.receivedMessages.count)"
+            )
+        }
+
+        print("\nListener 2 (test.filter2):")
+        print("Expected messages: 1")
+        print("Received messages: \(filterListener2.receivedMessages.count)")
+        if filterListener2.receivedMessages.count == 1 {
+            print("✅ Listener 2 received correct number of messages")
+        } else {
+            print(
+                "❌ Listener 2 received incorrect number of messages: \(filterListener2.receivedMessages.count)"
+            )
         }
 
         // Clean up

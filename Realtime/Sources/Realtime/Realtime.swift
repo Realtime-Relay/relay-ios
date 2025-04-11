@@ -352,6 +352,15 @@ import SwiftMsgpack
                                 let decodedMessage = try decoder.decode(
                                     RealtimeMessage.self, from: data)
 
+                                // Check if message should be processed
+                                // Only process if client_id doesn't match and room matches
+                                guard decodedMessage.clientId != self.clientId else {
+                                    if self.isDebug {
+                                        print("Skipping message from self: \(decodedMessage.id)")
+                                    }
+                                    continue
+                                }
+
                                 // Create the JSON object with required fields
                                 let messageJson: [String: Any] = [
                                     "id": decodedMessage.id,
@@ -367,22 +376,40 @@ import SwiftMsgpack
                                     }(),
                                 ]
 
-                                // Execute the callback with the JSON object
                                 if let listener = self.messageListeners[topic] {
-                                    // Acknowledge the message before processing
-                                    if let replySubject = message.replySubject {
-                                        try await natsConnection.publish(
-                                            Data(), subject: replySubject, reply: nil, headers: nil)
-                                        if self.isDebug {
-                                            print("   ✅ Message acknowledged before callback")
+                                    // Format the room to match the topic format
+                                    let formattedRoom = decodedMessage.room.replacingOccurrences(
+                                        of: "_", with: ".")
+
+                                    // Extract the raw topic name from the formatted NATS subject
+                                    let rawTopic =
+                                        finalTopic.split(separator: "_").last?.replacingOccurrences(
+                                            of: "_", with: ".") ?? topic
+
+                                    // Compare formatted room with raw topic name
+                                    if formattedRoom == rawTopic {
+                                        // Acknowledge the message before processing
+                                        if let replySubject = message.replySubject {
+                                            try await natsConnection.publish(
+                                                Data(), subject: replySubject, reply: nil,
+                                                headers: nil)
+                                            if self.isDebug {
+                                                print("   ✅ Message acknowledged before callback")
+                                            }
                                         }
-                                    }
 
-                                    listener.onMessage(messageJson)
+                                        listener.onMessage(messageJson)
 
-                                    if self.isDebug {
-                                        print("   ✅ Message processed by callback")
+                                        if self.isDebug {
+                                            print("   ✅ Message processed by callback")
+                                        }
+                                    } else if self.isDebug {
+                                        print(
+                                            "Room mismatch - message room: \(formattedRoom), expected: \(rawTopic)"
+                                        )
                                     }
+                                } else if self.isDebug {
+                                    print("No listener found for topic: \(topic)")
                                 }
                             } catch {
                                 if self.isDebug {
@@ -605,7 +632,6 @@ import SwiftMsgpack
         return messages
     }
 
-    
     // MARK: - Privates
 
     /// Subscribe to all pending topics that were initialized before connection
@@ -652,6 +678,17 @@ import SwiftMsgpack
                                         let decodedMessage = try decoder.decode(
                                             RealtimeMessage.self, from: data)
 
+                                        // Check if message should be processed
+                                        // IOS-FUNC-06-1: Only process if client_id doesn't match and room matches
+                                        guard decodedMessage.clientId != self.clientId else {
+                                            if self.isDebug {
+                                                print(
+                                                    "Skipping message from self: \(decodedMessage.id)"
+                                                )
+                                            }
+                                            continue
+                                        }
+
                                         // Create the JSON object with required fields
                                         let messageJson: [String: Any] = [
                                             "id": decodedMessage.id,
@@ -668,24 +705,45 @@ import SwiftMsgpack
                                             }(),
                                         ]
 
-                                        // Execute the callback with the JSON object
+                                        // Execute the callback with the JSON object if the topic matches
+                                        // Note: We use topic for lookup since that's what we subscribed to
                                         if let listener = self.messageListeners[topic] {
-                                            // Acknowledge the message before processing
-                                            if let replySubject = message.replySubject {
-                                                try await natsConnection.publish(
-                                                    Data(), subject: replySubject, reply: nil,
-                                                    headers: nil)
-                                                if self.isDebug {
-                                                    print(
-                                                        "   ✅ Message acknowledged before callback")
+                                            // Format the room to match the topic format
+                                            let formattedRoom = decodedMessage.room
+                                                .replacingOccurrences(
+                                                    of: "_", with: ".")
+
+                                            // Extract the raw topic name from the formatted NATS subject
+                                            let rawTopic =
+                                                finalTopic.split(separator: "_").last?
+                                                .replacingOccurrences(of: "_", with: ".") ?? topic
+
+                                            // Compare formatted room with raw topic name
+                                            if formattedRoom == rawTopic {
+                                                // Acknowledge the message before processing
+                                                if let replySubject = message.replySubject {
+                                                    try await natsConnection.publish(
+                                                        Data(), subject: replySubject, reply: nil,
+                                                        headers: nil)
+                                                    if self.isDebug {
+                                                        print(
+                                                            "   ✅ Message acknowledged before callback"
+                                                        )
+                                                    }
                                                 }
-                                            }
 
-                                            listener.onMessage(messageJson)
+                                                listener.onMessage(messageJson)
 
-                                            if self.isDebug {
-                                                print("   ✅ Message processed by callback")
+                                                if self.isDebug {
+                                                    print("   ✅ Message processed by callback")
+                                                }
+                                            } else if self.isDebug {
+                                                print(
+                                                    "Room mismatch - message room: \(formattedRoom), expected: \(rawTopic)"
+                                                )
                                             }
+                                        } else if self.isDebug {
+                                            print("No listener found for topic: \(topic)")
                                         }
                                     } catch {
                                         if self.isDebug {
@@ -775,7 +833,7 @@ import SwiftMsgpack
             )
         }
     }
-    
+
     private func resendStoredMessages() async throws {
         // Prevent recursive calls
         guard !isResendingMessages else { return }
@@ -840,7 +898,9 @@ import SwiftMsgpack
         }
     }
 
-    private func publishBatch(topic: String, messages: [(message: [String: Any], id: String?)]) async throws -> Bool {
+    private func publishBatch(topic: String, messages: [(message: [String: Any], id: String?)])
+        async throws -> Bool
+    {
         do {
             // Publish all messages in sequence
             for (message, _) in messages {
@@ -857,7 +917,7 @@ import SwiftMsgpack
             return false
         }
     }
-    
+
     /// Get the namespace for the current user
     private func getNamespace() async throws -> String {
         guard !self.apiKey.isEmpty else {
