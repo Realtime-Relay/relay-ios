@@ -556,10 +556,17 @@ import SwiftMsgpack
                                         print("   Content: \(messageDict["message"] ?? "none")")
                                     }
                                 }
+
+                                // Acknowledge the message after successful processing
+                                try await message.ack()
+                                if self.isDebug {
+                                    print("   ✅ Message acknowledged")
+                                }
                             } catch {
                                 if self.isDebug {
                                     print("Error processing message: \(error)")
                                 }
+                                // Don't acknowledge if processing failed
                             }
                         }
                     } catch {
@@ -686,8 +693,8 @@ import SwiftMsgpack
             name: consumerName,
             durable: nil,
             deliverPolicy: .all,
-            ackPolicy: .none,
-            filterSubject: formattedTopic,  // This is the actual topic we published to
+            ackPolicy: .explicit,
+            filterSubject: formattedTopic,
             replayPolicy: .instant
         )
 
@@ -744,6 +751,12 @@ import SwiftMsgpack
 
                         if isDebug {
                             print("Added message: \(messageDict)")
+                        }
+
+                        // Acknowledge the message after successful processing
+                        try await msg.ack()
+                        if isDebug {
+                            print("   ✅ Message acknowledged")
                         }
                     }
                 }
@@ -843,10 +856,17 @@ import SwiftMsgpack
                                                 )
                                             }
                                         }
+
+                                        // Acknowledge the message after successful processing
+                                        try await message.ack()
+                                        if self.isDebug {
+                                            print("   ✅ Message acknowledged")
+                                        }
                                     } catch {
                                         if self.isDebug {
                                             print("Error processing message: \(error)")
                                         }
+                                        // Don't acknowledge if processing failed
                                     }
                                 }
                             } catch {
