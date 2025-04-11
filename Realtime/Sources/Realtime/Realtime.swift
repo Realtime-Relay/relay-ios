@@ -10,7 +10,7 @@ import SwiftMsgpack
 @preconcurrency public final class Realtime: @unchecked Sendable {
     // MARK: - Properties
 
-    private var jetStream: JetStreamContext?
+    var jetStream: JetStreamContext?
     var natsConnection: NatsClient
     private var servers: [URL] = []
     private let apiKey: String

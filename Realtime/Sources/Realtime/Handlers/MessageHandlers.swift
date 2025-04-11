@@ -100,19 +100,19 @@ public struct RequestHandler<T: Codable & Sendable, R: Codable & Sendable> {
     ///   - stream: The stream to get history from
     ///   - limit: The maximum number of messages to get
     ///   - handler: The closure to call when messages are received
-    public func handleHistory(
-        stream: String,
-        limit: Int = 100,
-        handler: @escaping @Sendable ([T]) -> Void
-    ) async throws {
-        let messages = try await realtime.getMessageHistory(stream: stream, limit: limit)
-        let decoded = messages.compactMap { message -> T? in
-            let decoded = try? JSONDecoder().decode(T.self, from: message.payload)
-            return decoded
-        }
-        
-        if !decoded.isEmpty {
-            handler(decoded)
-        }
-    }
+//    public func handleHistory(
+//        stream: String,
+//        limit: Int = 100,
+//        handler: @escaping @Sendable ([T]) -> Void
+//    ) async throws {
+//        let messages = try await realtime.getMessageHistory(stream: stream, limit: limit)
+//        let decoded = messages.compactMap { message -> T? in
+//            let decoded = try? JSONDecoder().decode(T.self, from: message.payload)
+//            return decoded
+//        }
+//        
+//        if !decoded.isEmpty {
+//            handler(decoded)
+//        }
+//    }
 } 
