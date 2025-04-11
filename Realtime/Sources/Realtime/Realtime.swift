@@ -268,112 +268,70 @@ import SwiftMsgpack
             throw RelayError.invalidNamespace("Namespace not available - must be connected first")
         }
 
-        // Format stream name as namespace_stream
+        // Format stream name and subject
         let streamName = "\(currentNamespace)_stream"
+        let formattedSubject = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
 
         if isDebug {
             print("\n🔄 Stream Management:")
             print("   Topic: \(topic)")
-            print("   Namespace: \(currentNamespace)")
             print("   Stream Name: \(streamName)")
+            print("   Subject: \(formattedSubject)")
         }
 
-        // Format the subject for this topic
-        let formattedSubject = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
-
-        if isDebug {
-            print("   Formatted Subject: \(formattedSubject)")
-        }
-
-        // Check if topic has already been initialized
+        // Skip if topic already initialized
         if initializedTopics.contains(topic) {
             if isDebug {
-                print("   ℹ️ Topic already initialized, skipping stream update")
+                print("   ℹ️ Topic already initialized")
             }
             return
         }
 
-        do {
+        // Try to get existing stream
+        let stream = try? await js.getStream(name: streamName)
+
+        // Get current subjects or empty array if stream doesn't exist
+        let currentSubjects = stream?.info.config.subjects ?? []
+
+        // Create new subjects array with the new subject if not already present
+        let newSubjects =
+            currentSubjects.contains(formattedSubject)
+            ? currentSubjects
+            : currentSubjects + [formattedSubject]
+
+        // Create or update stream configuration
+        let config = StreamConfig(
+            name: streamName,
+            subjects: newSubjects,
+            retention: .limits,
+            maxConsumers: -1,
+            maxMsgs: -1,
+            maxBytes: -1,
+            discard: .old,
+            maxAge: NanoTimeInterval(0),
+            storage: .file,
+            replicas: 3
+        )
+
+        // Create or update stream
+        if stream == nil {
             if isDebug {
-                print("   Checking for existing stream...")
+                print("   Creating new stream...")
             }
-
-            // Try to get existing stream
-            let stream = try await js.getStream(name: streamName)
-
-            if isDebug {
-                print("   ✅ Stream exists")
-                print("   Current subjects: \(stream?.info.config.subjects ?? [])")
-            }
-
-            // Get current subjects
-            var subjects = stream?.info.config.subjects ?? []
-
-            // Add new subject if not exists
-            if !subjects.contains(formattedSubject) {
-                if isDebug {
-                    print("   Adding new subject to stream...")
-                }
-
-                subjects.append(formattedSubject)
-
-                // Update stream with new subjects
-                let config = StreamConfig(
-                    name: streamName,
-                    subjects: subjects,
-                    retention: .limits,
-                    maxConsumers: -1,
-                    maxMsgs: -1,
-                    maxBytes: -1,
-                    discard: .old,
-                    maxAge: NanoTimeInterval(0),
-                    storage: .file,
-                    replicas: 3
-                )
-
-                try await js.updateStream(cfg: config)
-
-                if isDebug {
-                    print("   ✅ Stream updated with new subject")
-                    print("   Updated subjects: \(subjects)")
-                }
-            } else if isDebug {
-                print("   ℹ️ Subject already exists in stream")
-            }
-        } catch {
-            if isDebug {
-                print("   ❌ Stream not found, creating new one...")
-            }
-
-            // Stream doesn't exist, create new one
-            let config = StreamConfig(
-                name: streamName,
-                subjects: [formattedSubject],
-                retention: .limits,
-                maxConsumers: -1,
-                maxMsgs: -1,
-                maxBytes: -1,
-                discard: .old,
-                maxAge: NanoTimeInterval(0),
-                storage: .file,
-                replicas: 3
-            )
-
             try await js.createStream(cfg: config)
-
+        } else if !currentSubjects.contains(formattedSubject) {
             if isDebug {
-                print("   ✅ New stream created")
-                print("   Initial subjects: \([formattedSubject])")
+                print("   Updating stream with new subject...")
             }
+            try await js.updateStream(cfg: config)
         }
 
         // Add to initialized topics cache
         initializedTopics.insert(topic)
 
         if isDebug {
-            print("   📝 Added to initialized topics cache")
-            print("   Current initialized topics: \(initializedTopics)")
-            print("✅ Stream management completed\n")
+            print("   ✅ Stream management completed")
+            print("   Subjects: \(newSubjects)")
         }
     }
 
