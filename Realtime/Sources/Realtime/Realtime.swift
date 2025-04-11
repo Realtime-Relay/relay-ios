@@ -202,6 +202,22 @@ import SwiftMsgpack
             }
         }
 
+        // Set up NATS event handlers
+        natsConnection.on([.closed, .connected, .disconnected, .error, .lameDuckMode, .suspended]) {
+            [weak self] natsEvent in
+            guard let self = self else { return }
+
+            Task {
+                do {
+                    try await self.handleNatsEvent(natsEvent)
+                } catch {
+                    if self.isDebug {
+                        print("❌ Error handling NATS event: \(error)")
+                    }
+                }
+            }
+        }
+
         // Also publish the event for other subscribers
         _ = try await publish(
             topic: SystemEvent.connected.rawValue,
@@ -271,7 +287,7 @@ import SwiftMsgpack
     public func publish(topic: String, message: Any) async throws -> Bool {
         // Special handling for system topics
         let isSystemTopic = SystemEvent.reservedTopics.contains(topic)
-        
+
         // Validate topic for publishing (skip validation for system topics)
         try TopicValidator.validate(topic, forPublishing: true, isInternalPublish: isSystemTopic)
 
@@ -1066,5 +1082,49 @@ import SwiftMsgpack
                 "timestamp": Int(Date().timeIntervalSince1970),
             ]
         )
+    }
+
+    private func handleNatsEvent(_ event: NatsEvent) async throws {
+        // Skip event handling if this was a manual disconnect
+        guard !wasManualDisconnect else { return }
+
+        switch event {
+        case .connected:
+            isConnected = true
+            if isDebug {
+                print("✅ NATS Event: Connected")
+            }
+            try await onReconnected()
+
+        case .disconnected:
+            isConnected = false
+            wasUnexpectedDisconnect = true
+            if isDebug {
+                print("⚠️ NATS Event: Unexpected disconnection")
+            }
+
+        case .closed:
+            isConnected = false
+            if isDebug {
+                print("🔒 NATS Event: Connection closed unexpectedly")
+            }
+
+        case .error(let error):
+            if isDebug {
+                print("❌ NATS Event: Error occurred - \(error)")
+            }
+
+        case .lameDuckMode:
+            if isDebug {
+                print("🦆 NATS Event: Server in lame duck mode")
+                print("⚠️ Server-initiated shutdown detected")
+            }
+            wasUnexpectedDisconnect = false
+
+        case .suspended:
+            if isDebug {
+                print("⏸️ NATS Event: Connection suspended")
+            }
+        }
     }
 }
