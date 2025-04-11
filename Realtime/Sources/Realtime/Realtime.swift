@@ -185,153 +185,6 @@ import SwiftMsgpack
         }
     }
 
-    /// Get the namespace for the current user
-    private func getNamespace() async throws -> String {
-        guard !self.apiKey.isEmpty else {
-            throw RelayError.invalidCredentials("API key not set")
-        }
-
-        if self.isDebug {
-            print("Requesting namespace with API key")
-        }
-
-        // Try to connect for up to 5 seconds
-        for _ in 0..<50 {
-            if isConnected {
-                break
-            }
-            try await Task.sleep(nanoseconds: 100_000_000)  // 100ms
-        }
-
-        guard isConnected else {
-            throw RelayError.notConnected("Failed to connect to NATS server")
-        }
-
-        // Create request payload
-        let request = [
-            "api_key": apiKey
-        ]
-
-        let requestData = try JSONSerialization.data(withJSONObject: request)
-
-        do {
-            // Request namespace from service with correct subject
-            let response = try await natsConnection.request(
-                requestData,
-                subject: "accounts.user.get_namespace",
-                timeout: 5.0
-            )
-
-            guard let responseData = response.payload else {
-                throw RelayError.invalidPayload("Response payload is missing")
-            }
-
-            if self.isDebug {
-                if let responseStr = String(data: responseData, encoding: .utf8) {
-                    print("Namespace response: \(responseStr)")
-                }
-            }
-
-            guard
-                let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-                let data = json["data"] as? [String: Any],
-                let namespace = data["namespace"] as? String
-            else {
-                throw RelayError.invalidPayload("Invalid response format or missing namespace")
-            }
-
-            if namespace.isEmpty {
-                throw RelayError.invalidNamespace("Namespace cannot be empty")
-            }
-
-            return namespace
-        } catch {
-            if self.isDebug {
-                print("Failed to get namespace: \(error)")
-            }
-            throw RelayError.invalidNamespace("Failed to retrieve namespace: \(error)")
-        }
-    }
-
-    /// Create or get a JetStream stream
-    private func createOrGetStream(for topic: String) async throws {
-        guard isConnected else {
-            throw RelayError.notConnected("Not connected to NATS server")
-        }
-
-        guard let js = jetStream else {
-            throw RelayError.notConnected("JetStream context not initialized")
-        }
-
-        guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
-        }
-
-        // Format stream name and subject
-        let streamName = "\(currentNamespace)_stream"
-        let formattedSubject = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
-
-        if isDebug {
-            print("\n🔄 Stream Management:")
-            print("   Topic: \(topic)")
-            print("   Stream Name: \(streamName)")
-            print("   Subject: \(formattedSubject)")
-        }
-
-        // Skip if topic already initialized
-        if initializedTopics.contains(topic) {
-            if isDebug {
-                print("   ℹ️ Topic already initialized")
-            }
-            return
-        }
-
-        // Try to get existing stream
-        let stream = try? await js.getStream(name: streamName)
-
-        // Get current subjects or empty array if stream doesn't exist
-        let currentSubjects = stream?.info.config.subjects ?? []
-
-        // Create new subjects array with the new subject if not already present
-        let newSubjects =
-            currentSubjects.contains(formattedSubject)
-            ? currentSubjects
-            : currentSubjects + [formattedSubject]
-
-        // Create or update stream configuration
-        let config = StreamConfig(
-            name: streamName,
-            subjects: newSubjects,
-            replicas: 3
-        )
-
-        // Create or update stream
-        if stream == nil {
-            if isDebug {
-                print("   Creating new stream...")
-            }
-            _ = try await js.createStream(cfg: config)
-        } else if !currentSubjects.contains(formattedSubject) {
-            if isDebug {
-                print("   Updating stream with new subject...")
-            }
-            _ = try await js.updateStream(cfg: config)
-        }
-
-        // Add to initialized topics cache
-        initializedTopics.insert(topic)
-
-        if isDebug {
-            print("   ✅ Stream management completed")
-            print("   Subjects: \(newSubjects)")
-        }
-    }
-
-    /// Update references to ensureStreamExists to use createOrGetStream
-    private func ensureStreamExists(for topic: String) async throws {
-        try await createOrGetStream(for: topic)
-    }
-
     /// Disconnect from the NATS server
     public func disconnect() async throws {
         // Cancel all message handling tasks
@@ -443,90 +296,6 @@ import SwiftMsgpack
         } catch {
             if isDebug {
                 print("Failed to publish message: \(error)")
-            }
-            return false
-        }
-    }
-
-    private func resendStoredMessages() async throws {
-        // Prevent recursive calls
-        guard !isResendingMessages else { return }
-        isResendingMessages = true
-        defer { isResendingMessages = false }
-
-        let storedMessages = messageStorage.getStoredMessages()
-        guard !storedMessages.isEmpty else { return }
-
-        if isDebug {
-            print("📤 Resending \(storedMessages.count) stored messages...")
-        }
-
-        // Group messages by topic for batch publishing
-        let messagesByTopic = Dictionary(grouping: storedMessages) { $0.topic }
-
-        for (topic, messages) in messagesByTopic {
-            do {
-                // Create a batch of messages for this topic
-                let messageBatch = messages.map { message in
-                    (message.message, message.message["id"] as? String)
-                }
-
-                // Try to publish all messages for this topic at once
-                let success = try await publishBatch(topic: topic, messages: messageBatch)
-
-                if success {
-                    // Remove all successfully published messages
-                    for message in messages {
-                        if let messageId = message.message["id"] as? String {
-                            messageStorage.removeMessage(topic: topic, messageId: messageId)
-                        }
-                    }
-                    if isDebug {
-                        print(
-                            "✅ Successfully resent \(messages.count) messages for topic: \(topic)")
-                    }
-                } else {
-                    // Mark all messages as resent to prevent repeated attempts
-                    for message in messages {
-                        if let messageId = message.message["id"] as? String {
-                            messageStorage.updateMessageStatus(
-                                topic: topic, messageId: messageId, resent: true)
-                        }
-                    }
-                    if isDebug {
-                        print("❌ Failed to resend messages for topic: \(topic)")
-                    }
-                }
-            } catch {
-                // Mark all messages as resent to prevent repeated attempts
-                for message in messages {
-                    if let messageId = message.message["id"] as? String {
-                        messageStorage.updateMessageStatus(
-                            topic: topic, messageId: messageId, resent: true)
-                    }
-                }
-                if isDebug {
-                    print("❌ Error resending messages for topic: \(topic), error: \(error)")
-                }
-            }
-        }
-    }
-
-    private func publishBatch(topic: String, messages: [(message: [String: Any], id: String?)])
-        async throws -> Bool
-    {
-        do {
-            // Publish all messages in sequence
-            for (message, _) in messages {
-                let success = try await publish(topic: topic, message: message)
-                if !success {
-                    return false
-                }
-            }
-            return true
-        } catch {
-            if isDebug {
-                print("❌ Error publishing batch: \(error)")
             }
             return false
         }
@@ -836,6 +605,9 @@ import SwiftMsgpack
         return messages
     }
 
+    
+    // MARK: - Privates
+
     /// Subscribe to all pending topics that were initialized before connection
     private func subscribeToTopics() async throws {
         guard !pendingTopics.isEmpty else { return }
@@ -1002,5 +774,234 @@ import SwiftMsgpack
                 timeout: 5.0
             )
         }
+    }
+    
+    private func resendStoredMessages() async throws {
+        // Prevent recursive calls
+        guard !isResendingMessages else { return }
+        isResendingMessages = true
+        defer { isResendingMessages = false }
+
+        let storedMessages = messageStorage.getStoredMessages()
+        guard !storedMessages.isEmpty else { return }
+
+        if isDebug {
+            print("📤 Resending \(storedMessages.count) stored messages...")
+        }
+
+        // Group messages by topic for batch publishing
+        let messagesByTopic = Dictionary(grouping: storedMessages) { $0.topic }
+
+        for (topic, messages) in messagesByTopic {
+            do {
+                // Create a batch of messages for this topic
+                let messageBatch = messages.map { message in
+                    (message.message, message.message["id"] as? String)
+                }
+
+                // Try to publish all messages for this topic at once
+                let success = try await publishBatch(topic: topic, messages: messageBatch)
+
+                if success {
+                    // Remove all successfully published messages
+                    for message in messages {
+                        if let messageId = message.message["id"] as? String {
+                            messageStorage.removeMessage(topic: topic, messageId: messageId)
+                        }
+                    }
+                    if isDebug {
+                        print(
+                            "✅ Successfully resent \(messages.count) messages for topic: \(topic)")
+                    }
+                } else {
+                    // Mark all messages as resent to prevent repeated attempts
+                    for message in messages {
+                        if let messageId = message.message["id"] as? String {
+                            messageStorage.updateMessageStatus(
+                                topic: topic, messageId: messageId, resent: true)
+                        }
+                    }
+                    if isDebug {
+                        print("❌ Failed to resend messages for topic: \(topic)")
+                    }
+                }
+            } catch {
+                // Mark all messages as resent to prevent repeated attempts
+                for message in messages {
+                    if let messageId = message.message["id"] as? String {
+                        messageStorage.updateMessageStatus(
+                            topic: topic, messageId: messageId, resent: true)
+                    }
+                }
+                if isDebug {
+                    print("❌ Error resending messages for topic: \(topic), error: \(error)")
+                }
+            }
+        }
+    }
+
+    private func publishBatch(topic: String, messages: [(message: [String: Any], id: String?)]) async throws -> Bool {
+        do {
+            // Publish all messages in sequence
+            for (message, _) in messages {
+                let success = try await publish(topic: topic, message: message)
+                if !success {
+                    return false
+                }
+            }
+            return true
+        } catch {
+            if isDebug {
+                print("❌ Error publishing batch: \(error)")
+            }
+            return false
+        }
+    }
+    
+    /// Get the namespace for the current user
+    private func getNamespace() async throws -> String {
+        guard !self.apiKey.isEmpty else {
+            throw RelayError.invalidCredentials("API key not set")
+        }
+
+        if self.isDebug {
+            print("Requesting namespace with API key")
+        }
+
+        // Try to connect for up to 5 seconds
+        for _ in 0..<50 {
+            if isConnected {
+                break
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+        }
+
+        guard isConnected else {
+            throw RelayError.notConnected("Failed to connect to NATS server")
+        }
+
+        // Create request payload
+        let request = [
+            "api_key": apiKey
+        ]
+
+        let requestData = try JSONSerialization.data(withJSONObject: request)
+
+        do {
+            // Request namespace from service with correct subject
+            let response = try await natsConnection.request(
+                requestData,
+                subject: "accounts.user.get_namespace",
+                timeout: 5.0
+            )
+
+            guard let responseData = response.payload else {
+                throw RelayError.invalidPayload("Response payload is missing")
+            }
+
+            if self.isDebug {
+                if let responseStr = String(data: responseData, encoding: .utf8) {
+                    print("Namespace response: \(responseStr)")
+                }
+            }
+
+            guard
+                let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+                let data = json["data"] as? [String: Any],
+                let namespace = data["namespace"] as? String
+            else {
+                throw RelayError.invalidPayload("Invalid response format or missing namespace")
+            }
+
+            if namespace.isEmpty {
+                throw RelayError.invalidNamespace("Namespace cannot be empty")
+            }
+
+            return namespace
+        } catch {
+            if self.isDebug {
+                print("Failed to get namespace: \(error)")
+            }
+            throw RelayError.invalidNamespace("Failed to retrieve namespace: \(error)")
+        }
+    }
+
+    /// Create or get a JetStream stream
+    private func createOrGetStream(for topic: String) async throws {
+        guard isConnected else {
+            throw RelayError.notConnected("Not connected to NATS server")
+        }
+
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
+        }
+
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
+        }
+
+        // Format stream name and subject
+        let streamName = "\(currentNamespace)_stream"
+        let formattedSubject = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
+
+        if isDebug {
+            print("\n🔄 Stream Management:")
+            print("   Topic: \(topic)")
+            print("   Stream Name: \(streamName)")
+            print("   Subject: \(formattedSubject)")
+        }
+
+        // Skip if topic already initialized
+        if initializedTopics.contains(topic) {
+            if isDebug {
+                print("   ℹ️ Topic already initialized")
+            }
+            return
+        }
+
+        // Try to get existing stream
+        let stream = try? await js.getStream(name: streamName)
+
+        // Get current subjects or empty array if stream doesn't exist
+        let currentSubjects = stream?.info.config.subjects ?? []
+
+        // Create new subjects array with the new subject if not already present
+        let newSubjects =
+            currentSubjects.contains(formattedSubject)
+            ? currentSubjects
+            : currentSubjects + [formattedSubject]
+
+        // Create or update stream configuration
+        let config = StreamConfig(
+            name: streamName,
+            subjects: newSubjects,
+            replicas: 3
+        )
+
+        // Create or update stream
+        if stream == nil {
+            if isDebug {
+                print("   Creating new stream...")
+            }
+            _ = try await js.createStream(cfg: config)
+        } else if !currentSubjects.contains(formattedSubject) {
+            if isDebug {
+                print("   Updating stream with new subject...")
+            }
+            _ = try await js.updateStream(cfg: config)
+        }
+
+        // Add to initialized topics cache
+        initializedTopics.insert(topic)
+
+        if isDebug {
+            print("   ✅ Stream management completed")
+            print("   Subjects: \(newSubjects)")
+        }
+    }
+
+    /// Update references to ensureStreamExists to use createOrGetStream
+    private func ensureStreamExists(for topic: String) async throws {
+        try await createOrGetStream(for: topic)
     }
 }
