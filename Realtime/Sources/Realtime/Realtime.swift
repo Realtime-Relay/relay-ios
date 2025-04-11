@@ -24,6 +24,7 @@ import SwiftMsgpack
     private var namespace: String?
     private var isStaging: Bool = false
     private var pendingTopics: Set<String> = []
+    private var initializedTopics: Set<String> = []
 
     private var messageListeners: [String: MessageListener] = [:]
     private var subscriptions: [String: NatsSubscription] = [:]
@@ -284,6 +285,14 @@ import SwiftMsgpack
             print("   Formatted Subject: \(formattedSubject)")
         }
 
+        // Check if topic has already been initialized
+        if initializedTopics.contains(topic) {
+            if isDebug {
+                print("   ℹ️ Topic already initialized, skipping stream update")
+            }
+            return
+        }
+
         do {
             if isDebug {
                 print("   Checking for existing stream...")
@@ -358,12 +367,12 @@ import SwiftMsgpack
             }
         }
 
-        // Add to existing streams cache
-        existingStreams.insert(streamName)
+        // Add to initialized topics cache
+        initializedTopics.insert(topic)
 
         if isDebug {
-            print("   📝 Added to existing streams cache")
-            print("   Current cached streams: \(existingStreams)")
+            print("   📝 Added to initialized topics cache")
+            print("   Current initialized topics: \(initializedTopics)")
             print("✅ Stream management completed\n")
         }
     }

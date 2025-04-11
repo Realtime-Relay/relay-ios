@@ -21,22 +21,22 @@ struct RealtimeCLI {
         // Test stream management
         print("\n=== Testing Stream Management ===")
         
-        // Test 1: Create stream with first topic
-        print("\nTest 1: Creating stream with first topic")
+        // Test 1: Publish to a new topic (should create stream)
+        print("\nTest 1: Publishing to new topic")
         let topic1 = "test.stream1"
-        let success1 = try await realtime.publish(topic: topic1, message: "First stream test")
-        print("Stream creation result: \(success1 ? "✅ Success" : "❌ Failed")")
+        let success1 = try await realtime.publish(topic: topic1, message: "First message")
+        print("✅ Published to new topic: \(success1 ? "Success" : "Failed")")
         
-        // Test 2: Add second topic to existing stream
-        print("\nTest 2: Adding second topic to existing stream")
+        // Test 2: Publish to same topic again (should use cache)
+        print("\nTest 2: Publishing to same topic")
+        let success2 = try await realtime.publish(topic: topic1, message: "Second message")
+        print("✅ Published to same topic: \(success2 ? "Success" : "Failed")")
+        
+        // Test 3: Publish to another new topic
+        print("\nTest 3: Publishing to another new topic")
         let topic2 = "test.stream2"
-        let success2 = try await realtime.publish(topic: topic2, message: "Second stream test")
-        print("Stream update result: \(success2 ? "✅ Success" : "❌ Failed")")
-        
-        // Test 3: Publish to existing topic
-        print("\nTest 3: Publishing to existing topic")
-        let success3 = try await realtime.publish(topic: topic1, message: "Second message to first topic")
-        print("Publish to existing topic result: \(success3 ? "✅ Success" : "❌ Failed")")
+        let success3 = try await realtime.publish(topic: topic2, message: "Third message")
+        print("✅ Published to new topic: \(success3 ? "Success" : "Failed")")
         
         // Test 4: Publish while disconnected
         print("\nTest 4: Publishing while disconnected")
