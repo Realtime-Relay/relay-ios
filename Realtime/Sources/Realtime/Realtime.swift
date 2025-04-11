@@ -441,7 +441,7 @@ import SwiftMsgpack
             if isDebug {
                 print("💾 Stored message locally (offline): \(messageDict)")
             }
-            return true
+            return false
         }
 
         guard let js = jetStream else {
