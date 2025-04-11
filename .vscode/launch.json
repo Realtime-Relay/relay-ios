@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "sweetpad-lldb",
+            "request": "launch",
+            "name": "Attach to running app (SweetPad)",
+            "preLaunchTask": "sweetpad: launch"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:relay-ios}/Realtime",
+            "name": "Debug realtime-ios-cli (Realtime)",
+            "program": "${workspaceFolder:relay-ios}/Realtime/.build/debug/realtime-ios-cli",
+            "preLaunchTask": "swift: Build Debug realtime-ios-cli (Realtime)"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:relay-ios}/Realtime",
+            "name": "Release realtime-ios-cli (Realtime)",
+            "program": "${workspaceFolder:relay-ios}/Realtime/.build/release/realtime-ios-cli",
+            "preLaunchTask": "swift: Build Release realtime-ios-cli (Realtime)"
+        }
+    ]
+}
