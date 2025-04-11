@@ -485,6 +485,11 @@ import SwiftMsgpack
     public func on(topic: String, listener: MessageListener) async throws {
         try TopicValidator.validate(topic)
 
+        // Validate listener is not null
+        guard listener != nil else {
+            throw RelayError.invalidListener("Listener cannot be null")
+        }
+
         // Store the listener
         messageListeners[topic] = listener
 
