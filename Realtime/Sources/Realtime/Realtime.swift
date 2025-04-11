@@ -180,6 +180,23 @@ import SwiftMsgpack
         // Subscribe to SDK topics
         try await subscribeToTopics()
 
+        // Trigger CONNECTED event
+        if let listener = messageListeners[SystemEvent.connected.rawValue] {
+            let connectedEvent: [String: Any] = [
+                "id": UUID().uuidString,
+                "message": [
+                    "status": "connected",
+                    "namespace": namespace,
+                    "timestamp": Int(Date().timeIntervalSince1970)
+                ]
+            ]
+            listener.onMessage(connectedEvent)
+            
+            if isDebug {
+                print("✅ Triggered CONNECTED event")
+            }
+        }
+
         if self.isDebug {
             print("✅ Connected and ready")
         }
@@ -536,7 +553,7 @@ import SwiftMsgpack
     }
 
     // MARK: - Privates
-    
+
     /// Handle incoming JetStream messages for a topic
     /// - Parameters:
     ///   - topic: The topic being subscribed to
