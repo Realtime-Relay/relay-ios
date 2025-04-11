@@ -93,7 +93,7 @@ struct RealtimeCLI {
 
         // Test manual disconnection
         print("\n🧪 Testing manual disconnection...")
-        try await realtime.disconnect()
+        try await realtime.close()
         print("✅ Manual disconnection completed")
 
         // Test reconnection
@@ -109,7 +109,7 @@ struct RealtimeCLI {
 
         // Clean up
         print("\n🧹 Cleaning up...")
-        try await realtime.disconnect()
+        try await realtime.close()
 
         print("\n✅ All tests completed")
     }

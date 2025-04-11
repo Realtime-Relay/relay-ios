@@ -233,8 +233,8 @@ import SwiftMsgpack
         }
     }
 
-    /// Disconnect from the NATS server
-    public func disconnect() async throws {
+    /// Close the NATS connection
+    public func close() async throws {
         guard isConnected else {
             if isDebug {
                 print("⚠️ Already disconnected")
@@ -266,7 +266,7 @@ import SwiftMsgpack
         // Clear JetStream context
         jetStream = nil
 
-        // Disconnect from NATS
+        // Close NATS connection
         try await natsConnection.close()
 
         // Set connection status

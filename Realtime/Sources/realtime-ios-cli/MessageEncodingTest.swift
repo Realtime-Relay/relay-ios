@@ -32,7 +32,7 @@ class MessageEncodingTest {
         // Wait for messages to be processed
         try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
         
-        try await realtime.disconnect()
+        try await realtime.close()
         print("Disconnected from NATS")
     }
 }
