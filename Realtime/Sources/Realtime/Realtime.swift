@@ -528,11 +528,9 @@ import SwiftMsgpack
                                 let decodedMessage = try decoder.decode(
                                     RealtimeMessage.self, from: data)
 
-                                // Convert to dictionary for listener
-                                let messageDict: [String: Any] = [
-                                    "client_id": decodedMessage.clientId,
+                                // Create the JSON object with required fields
+                                let messageJson: [String: Any] = [
                                     "id": decodedMessage.id,
-                                    "room": decodedMessage.room,
                                     "message": try {
                                         switch decodedMessage.message {
                                         case .string(let string):
@@ -543,30 +541,33 @@ import SwiftMsgpack
                                             return try JSONSerialization.jsonObject(with: data)
                                         }
                                     }(),
-                                    "start": decodedMessage.start,
                                 ]
 
-                                // Notify the listener
+                                // Execute the callback with the JSON object
                                 if let listener = self.messageListeners[topic] {
-                                    listener.onMessage(messageDict)
+                                    // Acknowledge the message before processing
+                                    if let replySubject = message.replySubject {
+                                        try await natsConnection.publish(
+                                            Data(), subject: replySubject, reply: nil, headers: nil)
+                                        if self.isDebug {
+                                            print("   ✅ Message acknowledged before callback")
+                                        }
+                                    }
+
+                                    listener.onMessage(messageJson)
 
                                     if self.isDebug {
-                                        print("\n📨 [\(topic)] Received message via listener:")
-                                        print("   From: \(decodedMessage.clientId)")
-                                        print("   Content: \(messageDict["message"] ?? "none")")
+                                        print("   ✅ Message processed by callback")
                                     }
-                                }
-
-                                // Acknowledge the message after successful processing
-                                try await message.ack()
-                                if self.isDebug {
-                                    print("   ✅ Message acknowledged")
                                 }
                             } catch {
                                 if self.isDebug {
                                     print("Error processing message: \(error)")
                                 }
-                                // Don't acknowledge if processing failed
+                                // Send negative acknowledgment by not responding
+                                if self.isDebug {
+                                    print("   ❌ Message not acknowledged due to error")
+                                }
                             }
                         }
                     } catch {
@@ -824,11 +825,9 @@ import SwiftMsgpack
                                         let decodedMessage = try decoder.decode(
                                             RealtimeMessage.self, from: data)
 
-                                        // Convert to dictionary for listener
-                                        let messageDict: [String: Any] = [
-                                            "client_id": decodedMessage.clientId,
+                                        // Create the JSON object with required fields
+                                        let messageJson: [String: Any] = [
                                             "id": decodedMessage.id,
-                                            "room": decodedMessage.room,
                                             "message": try {
                                                 switch decodedMessage.message {
                                                 case .string(let string):
@@ -840,33 +839,35 @@ import SwiftMsgpack
                                                         with: data)
                                                 }
                                             }(),
-                                            "start": decodedMessage.start,
                                         ]
 
-                                        // Notify the listener
+                                        // Execute the callback with the JSON object
                                         if let listener = self.messageListeners[topic] {
-                                            listener.onMessage(messageDict)
+                                            // Acknowledge the message before processing
+                                            if let replySubject = message.replySubject {
+                                                try await natsConnection.publish(
+                                                    Data(), subject: replySubject, reply: nil,
+                                                    headers: nil)
+                                                if self.isDebug {
+                                                    print(
+                                                        "   ✅ Message acknowledged before callback")
+                                                }
+                                            }
+
+                                            listener.onMessage(messageJson)
 
                                             if self.isDebug {
-                                                print(
-                                                    "\n📨 [\(topic)] Received message via listener:")
-                                                print("   From: \(decodedMessage.clientId)")
-                                                print(
-                                                    "   Content: \(messageDict["message"] ?? "none")"
-                                                )
+                                                print("   ✅ Message processed by callback")
                                             }
-                                        }
-
-                                        // Acknowledge the message after successful processing
-                                        try await message.ack()
-                                        if self.isDebug {
-                                            print("   ✅ Message acknowledged")
                                         }
                                     } catch {
                                         if self.isDebug {
                                             print("Error processing message: \(error)")
                                         }
-                                        // Don't acknowledge if processing failed
+                                        // Send negative acknowledgment by not responding
+                                        if self.isDebug {
+                                            print("   ❌ Message not acknowledged due to error")
+                                        }
                                     }
                                 }
                             } catch {

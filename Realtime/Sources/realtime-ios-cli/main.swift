@@ -133,6 +133,126 @@ struct RealtimeCLI {
             print("✅ Invalid date range test passed (error thrown as expected)")
         }
 
+        // Test message acknowledgment
+        print("\n=== Testing Message Acknowledgment ===")
+        let testTopic = "test.ack"
+
+        // Create a test message listener
+        class TestMessageListener: MessageListener {
+            var receivedMessages: [[String: Any]] = []
+            var ackBeforeCallback = false
+
+            func setAcknowledged() {
+                ackBeforeCallback = true
+            }
+
+            func onMessage(_ message: [String: Any]) {
+                // Verify message format
+                guard message["id"] as? String != nil,
+                    message["message"] != nil
+                else {
+                    print("❌ Invalid message format")
+                    return
+                }
+
+                // Verify no extra fields
+                if message.keys.count != 2 {
+                    print("❌ Message contains extra fields")
+                    return
+                }
+
+                // Verify ack was called before this callback
+                if !ackBeforeCallback {
+                    print("❌ Ack was not called before callback")
+                    return
+                }
+
+                receivedMessages.append(message)
+                print("✅ Message received and processed correctly")
+
+                // Reset the flag for the next message
+                ackBeforeCallback = false
+            }
+        }
+
+        let listener = TestMessageListener()
+
+        // Subscribe to test topic
+        print("\nSubscribing to test topic...")
+        try await realtime.on(topic: testTopic, listener: listener)
+
+        // Test 1: Normal message processing
+        print("\nTest 1: Normal message processing")
+        let testMessage = "Test message for ack verification"
+        _ = try await realtime.publish(topic: testTopic, message: testMessage)
+
+        // Wait for message to be processed
+        try await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
+
+        // Verify message was received
+        if listener.receivedMessages.isEmpty {
+            print("❌ No messages received")
+        } else {
+            print("✅ Message received and processed")
+        }
+
+        // Test 2: Error handling
+        print("\nTest 2: Error handling")
+        class ErrorThrowingListener: MessageListener {
+            func onMessage(_ message: [String: Any]) {
+                print("Simulating error in message processing")
+                fatalError("Test error")
+            }
+        }
+
+        let errorListener = ErrorThrowingListener()
+        try await realtime.on(topic: "test.error", listener: errorListener)
+
+        // Publish a message that should cause an error
+        _ = try await realtime.publish(topic: "test.error", message: "Error test message")
+
+        // Wait for error to be processed
+        try await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
+
+        // Test 3: Message format verification
+        print("\nTest 3: Message format verification")
+        let formatTestTopic = "test.format"
+
+        class FormatTestListener: MessageListener {
+            func onMessage(_ message: [String: Any]) {
+                // Verify message format
+                guard message["id"] as? String != nil,
+                    message["message"] != nil
+                else {
+                    print("❌ Invalid message format")
+                    return
+                }
+
+                // Verify no extra fields
+                if message.keys.count != 2 {
+                    print("❌ Message contains extra fields")
+                    return
+                }
+
+                print("✅ Message format correct")
+            }
+        }
+
+        let formatListener = FormatTestListener()
+        try await realtime.on(topic: formatTestTopic, listener: formatListener)
+
+        // Test different message types
+        let formatTestMessages: [Any] = [
+            "String message",
+            42,
+            ["key": "value"],
+        ]
+
+        for message in formatTestMessages {
+            _ = try await realtime.publish(topic: formatTestTopic, message: message)
+            try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
+        }
+
         // Clean up
         print("\n🧹 Cleaning up...")
         try await realtime.disconnect()
