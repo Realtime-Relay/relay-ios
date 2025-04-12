@@ -10,11 +10,11 @@ import Foundation
 
 /// System events for internal SDK events
 public enum SystemEvent: String, CaseIterable {
-    case connected = "sdk.connected"
-    case disconnected = "sdk.disconnected"
-    case reconnecting = "sdk.reconnecting"
-    case reconnected = "sdk.reconnected"
-    case messageResend = "sdk.message_resend"
+    case connected = "CONNECTED"
+    case disconnected = "DISCONNECTED"
+    case reconnecting = "RECONNECTING"
+    case reconnected = "RECONNECT"
+    case messageResend = "MESSAGE_RESEND"
     
     /// Reserved system topics that cannot be used by clients
     static var reservedTopics: Set<String> {
