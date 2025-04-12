@@ -24,6 +24,7 @@ public class RealtimeTests {
         try await testStreamRecovery()
         try await testMessageHistory()
         try await testOfflineMessageHandling()
+        try await testPublishAndSubscribe()
 
         // Clean up
         try await cleanup()
@@ -242,6 +243,73 @@ public class RealtimeTests {
         }
 
         print("✅ Offline message handling test completed")
+    }
+
+    private func testPublishAndSubscribe() async throws {
+        print("\n🧪 Test 9: Publish and Subscribe")
+        print("Testing real-time message publishing and subscription...")
+
+        let testTopic = "test_pubsub_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
+        var receivedMessages: [[String: Any]] = []
+
+        // Create message listener
+        class TestMessageListener: MessageListener {
+            var messages: [[String: Any]]
+
+            init(messages: [[String: Any]]) {
+                self.messages = messages
+            }
+
+            func onMessage(_ message: [String: Any]) {
+                print("📥 Received message: \(message)")
+                messages.append(message)
+            }
+        }
+
+        let messageListener = TestMessageListener(messages: receivedMessages)
+
+        // Set up subscription
+        print("\nSetting up subscription for topic: \(testTopic)")
+        try await realtime.on(topic: testTopic, listener: messageListener)
+        print("✅ Subscription established")
+
+        // Publish test messages
+        print("\nPublishing test messages...")
+        let messages = [
+            ["content": "PubSub Test 1", "timestamp": Int(Date().timeIntervalSince1970)],
+            ["content": "PubSub Test 2", "timestamp": Int(Date().timeIntervalSince1970) + 1],
+            ["content": "PubSub Test 3", "timestamp": Int(Date().timeIntervalSince1970) + 2],
+        ]
+
+        for message in messages {
+            let success = try await realtime.publish(topic: testTopic, message: message)
+            if success {
+                print("📤 Published message: \(message)")
+            } else {
+                print("❌ Failed to publish message: \(message)")
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second delay
+        }
+
+        // Wait for messages to be received
+        print("\nWaiting for messages to be received...")
+        try await Task.sleep(nanoseconds: 5_000_000_000)  // 5 seconds
+
+        // Verify received messages
+        print("\nReceived \(messageListener.messages.count) messages:")
+        for message in messageListener.messages {
+            print("Message: \(message)")
+        }
+
+        // Cleanup subscription
+        let unsubscribed = try await realtime.off(topic: testTopic)
+        if unsubscribed {
+            print("✅ Unsubscribed from topic")
+        } else {
+            print("⚠️ Topic was not subscribed")
+        }
+
+        print("✅ Publish and Subscribe test completed")
     }
 
     private func cleanup() async throws {

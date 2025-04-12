@@ -7,15 +7,15 @@ let package = Package(
     name: "Realtime",
     platforms: [
         .macOS(.v13),
-        .iOS(.v13)
+        .iOS(.v13),
     ],
     products: [
         .library(name: "Realtime", targets: ["Realtime"]),
-        .executable(name: "realtime-ios-cli", targets: ["realtime-ios-cli"])
+        .executable(name: "realtime-ios-cli", targets: ["realtime-ios-cli"]),
     ],
     dependencies: [
         .package(url: "https://github.com/nats-io/nats.swift.git", from: "0.4.0"),
-        .package(url: "https://github.com/nnabeyang/swift-msgpack", from: "0.7.0")
+        .package(url: "https://github.com/nnabeyang/swift-msgpack", from: "0.7.0"),
     ],
     targets: [
         .target(

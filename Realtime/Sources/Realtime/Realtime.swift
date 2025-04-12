@@ -422,11 +422,9 @@ import SwiftMsgpack
                 let consumerConfig = ConsumerConfig(
                     name: "\(topic)_consumer",
                     durable: "\(topic)_consumer",
-                    deliverPolicy: .new,
-                    optStartTime: ISO8601DateFormatter().string(from: Date()),
+                    deliverPolicy: .all,
                     ackPolicy: .explicit,
-                    filterSubject: finalTopic,
-                    replayPolicy: .instant
+                    filterSubject: finalTopic
                 )
 
                 // Create the consumer
@@ -734,11 +732,9 @@ import SwiftMsgpack
                         let consumerConfig = ConsumerConfig(
                             name: "\(topic)_consumer",
                             durable: "\(topic)_consumer",
-                            deliverPolicy: .new,
-                            optStartTime: ISO8601DateFormatter().string(from: Date()),
+                            deliverPolicy: .all,
                             ackPolicy: .explicit,
-                            filterSubject: finalTopic,
-                            replayPolicy: .instant
+                            filterSubject: finalTopic
                         )
 
                         // Create the consumer
