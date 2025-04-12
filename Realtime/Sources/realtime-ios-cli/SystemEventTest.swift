@@ -22,27 +22,27 @@ public struct SystemEventTest {
         print("\nSetting up system event listeners...")
 
         // Connected Event Listener
-        let connectedListener = TestMessageListener(name: "Connected") { _ in
+        let connectedListener = TestMessageListenerSystem(name: "Connected") { _ in
             print("System Event: Connected")
         }
         try await realtime.on(topic: SystemEvent.connected.rawValue, listener: connectedListener)
 
         // Disconnected Event Listener
-        let disconnectedListener = TestMessageListener(name: "Disconnected") { _ in
+        let disconnectedListener = TestMessageListenerSystem(name: "Disconnected") { _ in
             print("System Event: Disconnected")
         }
         try await realtime.on(
             topic: SystemEvent.disconnected.rawValue, listener: disconnectedListener)
 
         // Reconnecting Event Listener
-        let reconnectingListener = TestMessageListener(name: "Reconnecting") { _ in
+        let reconnectingListener = TestMessageListenerSystem(name: "Reconnecting") { _ in
             print("System Event: Reconnecting")
         }
         try await realtime.on(
             topic: SystemEvent.reconnecting.rawValue, listener: reconnectingListener)
 
         // Reconnected Event Listener
-        let reconnectedListener = TestMessageListener(name: "Reconnected") { _ in
+        let reconnectedListener = TestMessageListenerSystem(name: "Reconnected") { _ in
             print("System Event: Reconnected")
         }
         try await realtime.on(
@@ -50,7 +50,7 @@ public struct SystemEventTest {
 
         // Message Resend Event Listener
         let messageResendListener = TestMessageListener(name: "MessageResend") { message in
-            if let count = message["count"] as? Int {
+            if let count = message as? Int {
                 print("System Event: Resending \(count) messages")
             }
         }
@@ -81,7 +81,7 @@ public struct SystemEventTest {
 
         // Test 4: Integer Message Publishing
         print("\n🧪 Test 4: Testing integer message publishing...")
-        let integerListener = TestMessageListener(name: "Integer") { message in
+        let integerListener = TestMessageListenerSystem(name: "Integer") { message in
             print("\n🔢 Integer Message Event:")
             print("  Time: \(Date().formatted())")
             print("  Details: \(message)")
@@ -113,5 +113,19 @@ public struct SystemEventTest {
         print("Test completed - disconnected from NATS")
 
         print("\n✅ System Event Test completed")
+    }
+}
+
+class TestMessageListenerSystem: MessageListener {
+    let name: String
+    let onMessageCallback: (Any) -> Void
+
+    init(name: String, onMessage: @escaping (Any) -> Void) {
+        self.name = name
+        self.onMessageCallback = onMessage
+    }
+
+    func onMessage(_ message: Any) {
+        onMessageCallback(message)
     }
 }

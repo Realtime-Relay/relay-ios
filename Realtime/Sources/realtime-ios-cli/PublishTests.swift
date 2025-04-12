@@ -4,7 +4,7 @@ import Realtime
 class PublishTests {
     private let realtime: Realtime
     private let isDebug: Bool
-    private var receivedMessages: [[String: Any]] = []
+    private var receivedMessages: [Any] = []
     private var testTopic: String = "test_publish_\(UUID().uuidString)"
     private var messageExpectation: (() -> Void)?
     private var expectations: [String: (() -> Void)] = [:]
@@ -176,14 +176,14 @@ class PublishTests {
 // Helper class for message listening
 class TestMessageListener: MessageListener {
     let name: String
-    let onMessageCallback: ([String: Any]) -> Void
+    let onMessageCallback: (Any) -> Void
 
-    init(name: String, onMessage: @escaping ([String: Any]) -> Void) {
+    init(name: String, onMessage: @escaping (Any) -> Void) {
         self.name = name
         self.onMessageCallback = onMessage
     }
 
-    func onMessage(_ message: [String: Any]) {
+    func onMessage(_ message: Any) {
         onMessageCallback(message)
     }
 }

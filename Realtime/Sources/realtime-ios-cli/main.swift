@@ -3,9 +3,9 @@ import Realtime
 
 // Create a status listener
 class StatusListener: MessageListener {
-    func onMessage(_ message: [String: Any]) {
+    func onMessage(_ message: Any) {
         print("\n📡 Status Update:")
-        if let status = message["message"] as? [String: Any],
+        if let status = message as? [String: Any],
             let statusType = status["status"] as? String
         {
             switch statusType {
@@ -31,12 +31,16 @@ class StatusListener: MessageListener {
 class ChatMessageListener: MessageListener {
     var messageCount: Int = 0
 
-    func onMessage(_ message: [String: Any]) {
+    func onMessage(_ message: Any) {
         messageCount += 1
         print("\n📥 Received chat message:")
-        print("   From: \(message["sender"] ?? "Unknown")")
-        print("   Message: \(message["text"] ?? "")")
-        print("   Time: \(message["timestamp"] ?? "")")
+        if let messageDict = message as? [String: Any] {
+            print("   From: \(messageDict["sender"] ?? "Unknown")")
+            print("   Message: \(messageDict["text"] ?? "")")
+            print("   Time: \(messageDict["timestamp"] ?? "")")
+        } else {
+            print("   Message: \(message)")
+        }
     }
 }
 

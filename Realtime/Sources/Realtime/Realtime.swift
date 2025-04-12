@@ -299,14 +299,14 @@ import SwiftMsgpack
         let messageContent: RealtimeMessage.MessageContent
         if let string = message as? String {
             messageContent = .string(string)
-        } else if let integer = message as? Int {
-            messageContent = .integer(integer)
+        } else if let number = message as? Double {
+            messageContent = .number(number)
         } else if let json = message as? [String: Any] {
             let jsonData = try JSONSerialization.data(withJSONObject: json)
             messageContent = .json(jsonData)
         } else {
             throw RelayError.invalidPayload(
-                "Message must be a valid JSON object, string, or integer")
+                "Message must be a valid JSON object, string, or number")
         }
 
         // Create the final message
@@ -576,7 +576,7 @@ import SwiftMsgpack
                             "message": try {
                                 switch decodedMessage.message {
                                 case .string(let str): return str
-                                case .integer(let int): return int
+                                case .number(let number): return number
                                 case .json(let data):
                                     return try JSONSerialization.jsonObject(with: data)
                                 }
@@ -653,26 +653,20 @@ import SwiftMsgpack
                             continue
                         }
 
-                        // Create the JSON object with required fields
-                        let messageJson: [String: Any] = [
-                            "id": decodedMessage.id,
-                            "message": try {
-                                switch decodedMessage.message {
-                                case .string(let string):
-                                    return string
-                                case .integer(let integer):
-                                    return integer
-                                case .json(let data):
-                                    return try JSONSerialization.jsonObject(with: data)
-                                }
-                            }(),
-                        ]
+                        // Extract only the message content
+                        let messageContent: Any
+                        switch decodedMessage.message {
+                        case .string(let string):
+                            messageContent = string
+                        case .number(let number):
+                            messageContent = number
+                        case .json(let data):
+                            messageContent = try JSONSerialization.jsonObject(with: data)
+                        }
 
-                        // Notify the listener
+                        // Notify the listener with just the message content
                         if let listener = self.messageListeners[topic] {
-                            if let messageContent = messageJson["message"] as? [String: Any] {
-                                listener.onMessage(messageContent)
-                            }
+                            listener.onMessage(messageContent)
                         }
 
                         // Acknowledge the message after successful processing

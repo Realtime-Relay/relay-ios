@@ -254,19 +254,29 @@ public class RealtimeTests {
 
         // Create message listener
         class TestMessageListener: MessageListener {
-            var messages: [[String: Any]]
+            let name: String
+            let onMessageCallback: (Any) -> Void
 
-            init(messages: [[String: Any]]) {
-                self.messages = messages
+            init(name: String, onMessage: @escaping (Any) -> Void) {
+                self.name = name
+                self.onMessageCallback = onMessage
             }
 
-            func onMessage(_ message: [String: Any]) {
-                print("📥 Received message: \(message)")
-                messages.append(message)
+            func onMessage(_ message: Any) {
+                onMessageCallback(message)
             }
         }
 
-        let messageListener = TestMessageListener(messages: receivedMessages)
+        let messageListener = TestMessageListener(
+            name: "TestListener",
+            onMessage: { message in
+                if let messageDict = message as? [String: Any] {
+                    receivedMessages.append(messageDict)
+                    print("📥 Received message: \(messageDict)")
+                } else {
+                    print("❌ Received unexpected message format: \(message)")
+                }
+            })
 
         // Set up subscription
         print("\nSetting up subscription for topic: \(testTopic)")
@@ -296,8 +306,8 @@ public class RealtimeTests {
         try await Task.sleep(nanoseconds: 5_000_000_000)  // 5 seconds
 
         // Verify received messages
-        print("\nReceived \(messageListener.messages.count) messages:")
-        for message in messageListener.messages {
+        print("\nReceived \(receivedMessages.count) messages:")
+        for message in receivedMessages {
             print("Message: \(message)")
         }
 
