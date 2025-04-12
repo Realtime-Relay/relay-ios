@@ -1,6 +1,32 @@
 import Foundation
 import Realtime
 
+// Create a status listener
+class StatusListener: MessageListener {
+    func onMessage(_ message: [String: Any]) {
+        print("\n📡 Status Update:")
+        if let status = message["message"] as? [String: Any],
+            let statusType = status["status"] as? String
+        {
+            switch statusType {
+            case "connected":
+                print("   ✅ Connected to server")
+                print("   Namespace: \(status["namespace"] ?? "unknown")")
+            case "disconnected":
+                print("   ❌ Disconnected from server")
+            case "reconnecting":
+                print("   🔄 Reconnecting to server...")
+            case "reconnected":
+                print("   ✅ Reconnected to server")
+            case "messageResend":
+                print("   📤 Resending messages...")
+            default:
+                print("   ℹ️ Unknown status: \(statusType)")
+            }
+        }
+    }
+}
+
 // Create a chat message listener
 class ChatMessageListener: MessageListener {
     var messageCount: Int = 0
@@ -27,9 +53,29 @@ Task {
         // Prepare with production settings (staging: false)
         try realtime.prepare(staging: false, opts: ["debug": true])
 
+        // Set up status monitoring
+        print("\n=== Testing Connection Status Monitoring ===")
+        let statusListener = StatusListener()
+        try await realtime.on(topic: SystemEvent.connected.rawValue, listener: statusListener)
+        try await realtime.on(topic: SystemEvent.disconnected.rawValue, listener: statusListener)
+        try await realtime.on(topic: SystemEvent.reconnecting.rawValue, listener: statusListener)
+        try await realtime.on(topic: SystemEvent.reconnected.rawValue, listener: statusListener)
+        try await realtime.on(topic: SystemEvent.messageResend.rawValue, listener: statusListener)
+        print("✅ Status monitoring set up")
+
         // Connect to the service
         try await realtime.connect()
         print("✅ Successfully connected to Realtime service")
+
+        // Test disconnection
+        print("\n🧪 Testing disconnection...")
+        try await realtime.close()
+        print("✅ Disconnected from service")
+
+        // Test reconnection
+        print("\n🧪 Testing reconnection...")
+        try await realtime.connect()
+        print("✅ Reconnected to service")
 
         // Run comprehensive tests
         let tests = try RealtimeTests(
