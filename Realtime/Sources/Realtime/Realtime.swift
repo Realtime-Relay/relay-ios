@@ -483,26 +483,29 @@ import SwiftMsgpack
     /// Get a list of past messages between a start time and an optional end time
     /// - Parameters:
     ///   - topic: The topic to get messages from
-    ///   - startDate: The start date for message retrieval (required)
-    ///   - endDate: The end date for message retrieval (optional)
-    /// - Returns: An array of messages matching the criteria
+    ///   - start: The start date for message retrieval (required)
+    ///   - end: The end date for message retrieval (optional)
+    ///   - limit: The maximum number of messages to fetch (optional)
+    /// - Returns: An array of message dictionaries
     /// - Throws: TopicValidationError if topic is invalid
-    /// - Throws: RelayError.invalidDate if dates are invalid
-    public func history(topic: String, startDate: Date, endDate: Date? = nil) async throws
-        -> [[String: Any]]
-    {
+    /// - Throws: RelayError.invalidDateRange if dates are invalid
+    public func history(
+        topic: String,
+        start: Date,
+        end: Date? = nil,
+        limit: Int? = nil
+    ) async throws -> [[String: Any]] {
         // Validate topic
         try TopicValidator.validate(topic)
 
-        // Validate start date
-        guard startDate != Date.distantPast else {
-            throw RelayError.invalidDate("Start date cannot be null or invalid")
+        // Validate dates
+        guard start <= Date() else {
+            throw RelayError.invalidDate("Start date cannot be in the future")
         }
 
-        // Validate end date if provided
-        if let endDate = endDate {
-            guard endDate > startDate else {
-                throw RelayError.invalidDate("End date must be after start date")
+        if let end = end {
+            guard start <= end else {
+                throw RelayError.invalidDate("Start date must be before end date")
             }
         }
 
@@ -511,114 +514,101 @@ import SwiftMsgpack
             return []
         }
 
+        // Ensure we have a namespace
         guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
+            throw RelayError.notConnected("No namespace available")
         }
 
-        // Format stream name and topic
-        let streamName = "\(currentNamespace)_stream"
-        let formattedTopic = try NatsConstants.Topics.formatTopic(
-            topic, namespace: currentNamespace)
-
-        if isDebug {
-            print("Using stream name for history: \(streamName)")
-            print("Formatted topic: \(formattedTopic)")
-        }
-
-        // Ensure stream exists before proceeding
-        try await ensureStreamExists(for: topic)
-
+        // Get JetStream context
         guard let js = jetStream else {
             throw RelayError.notConnected("JetStream context not initialized")
         }
 
-        // Create a consumer config for message retrieval
-        let consumerName = "temp_consumer_\(UUID().uuidString)"
+        // Format topic with namespace
+        let formattedTopic = try NatsConstants.Topics.formatTopic(
+            topic, namespace: currentNamespace)
+
+        // Ensure stream exists
+        try await createOrGetStream(for: topic)
+
+        // Create unique consumer name for this history request
+        let consumerName = "history_\(UUID().uuidString)"
+
+        // Create consumer configuration
         let consumerConfig = ConsumerConfig(
             name: consumerName,
+            durable: consumerName,  // Make it durable to ensure message delivery
             deliverPolicy: .byStartTime,
-            optStartTime: ISO8601DateFormatter().string(from: startDate),
+            optStartTime: ISO8601DateFormatter().string(from: start),
             ackPolicy: .explicit,
+            maxDeliver: 1,
             filterSubject: formattedTopic,
-            replayPolicy: .instant
+            replayPolicy: .instant,
+            maxAckPending: limit ?? 100
         )
 
-        if isDebug {
-            print("Creating consumer with config: \(consumerConfig)")
-            print("Using formatted topic for filtering: \(formattedTopic)")
-        }
-
-        // Create consumer and fetch messages
         var messages: [[String: Any]] = []
-        do {
-            let consumer = try await js.createConsumer(stream: streamName, cfg: consumerConfig)
+        let batchSize = limit ?? 100
 
-            // Fetch messages in batches
-            let fetchResult = try await consumer.fetch(batch: 100, expires: 5)
+        do {
+            // Create consumer
+            let consumer = try await js.createConsumer(
+                stream: "\(currentNamespace)_stream", cfg: consumerConfig)
+
+            // Fetch messages with batch size and timeout
+            let fetchResult = try await consumer.fetch(batch: batchSize, expires: 5)
 
             for try await msg in fetchResult {
-                // Access the message payload correctly
-                guard let payload = msg.payload else {
-                    if isDebug {
-                        print("Message payload is nil")
+                if let payload = msg.payload {
+                    let decoder = MsgPackDecoder()
+                    if let decodedMessage = try? decoder.decode(RealtimeMessage.self, from: payload)
+                    {
+                        // Check end date if specified
+                        let messageDate = Date(
+                            timeIntervalSince1970: TimeInterval(decodedMessage.start))
+                        if let end = end, messageDate > end {
+                            break
+                        }
+
+                        // Convert message to dictionary format
+                        let messageDict: [String: Any] = [
+                            "client_id": decodedMessage.clientId,
+                            "id": decodedMessage.id,
+                            "room": decodedMessage.room,
+                            "message": try {
+                                switch decodedMessage.message {
+                                case .string(let str): return str
+                                case .integer(let int): return int
+                                case .json(let data):
+                                    return try JSONSerialization.jsonObject(with: data)
+                                }
+                            }(),
+                            "start": decodedMessage.start,
+                        ]
+
+                        messages.append(messageDict)
+                        try await msg.ack()
                     }
-                    continue
                 }
 
-                // Decode MessagePack data
-                let decoder = MsgPackDecoder()
-                if let decodedMessage = try? decoder.decode(RealtimeMessage.self, from: payload) {
-                    // Convert message timestamp to Date for comparison
-                    let messageDate = Date(
-                        timeIntervalSince1970: TimeInterval(decodedMessage.start))
-
-                    // Check if message is within the requested time range
-                    let isAfterStart = messageDate >= startDate
-                    let isBeforeEnd = endDate.map { messageDate <= $0 } ?? true
-
-                    if isAfterStart && isBeforeEnd {
-                        // Format the room and validate it, then compare with topic
-                        if try TopicValidator.formatRoom(decodedMessage.room, isDebug: self.isDebug)
-                            == TopicValidator.extractRawTopic(
-                                from: formattedTopic, isDebug: self.isDebug)
-                        {
-                            // Convert message to dictionary format
-                            let messageDict: [String: Any] = [
-                                "client_id": decodedMessage.clientId,
-                                "id": decodedMessage.id,
-                                "room": decodedMessage.room,
-                                "message": try {
-                                    switch decodedMessage.message {
-                                    case .string(let str): return str
-                                    case .integer(let int): return int
-                                    case .json(let data):
-                                        return try JSONSerialization.jsonObject(with: data)
-                                    }
-                                }(),
-                                "start": decodedMessage.start,
-                            ]
-                            messages.append(messageDict)
-
-                            // Acknowledge the message after successful processing
-                            try await msg.ack()
-                        }
-                    }
+                // Break if we've reached the limit
+                if let limit = limit, messages.count >= limit {
+                    break
                 }
             }
 
-            // Clean up the consumer
-            try await js.deleteConsumer(stream: streamName, name: consumerName)
+            // Clean up the consumer after use
+            try? await js.deleteConsumer(stream: "\(currentNamespace)_stream", name: consumerName)
+
+            if isDebug {
+                print("✅ Retrieved \(messages.count) messages from history")
+            }
 
         } catch {
             if isDebug {
-                print("Error fetching messages: \(error)")
+                print("Error fetching message history: \(error)")
             }
-            // IOS-FUNC-08-10: Return empty array if no messages found
-            return []
-        }
-
-        if isDebug {
-            print("Retrieved \(messages.count) messages")
+            throw RelayError.invalidPayload("Failed to fetch message history: \(error)")
         }
 
         return messages
@@ -1055,8 +1045,8 @@ import SwiftMsgpack
         guard wasUnexpectedDisconnect else { return }
 
         if isDebug {
-            print("�� Reconnected to NATS server")
-            print("�� Handling unexpected disconnect...")
+            print("✅ Reconnected to NATS server")
+            print("✅ Handling unexpected disconnect...")
         }
 
         // Resend stored messages

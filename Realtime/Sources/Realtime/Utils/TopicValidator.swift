@@ -82,7 +82,7 @@ public struct TopicValidator {
     public static func formatTopic(_ topic: String, namespace: String, isDebug: Bool = false) throws
         -> String
     {
-        // First validate the topic
+        // First validate the raw topic
         try validate(topic, isDebug: isDebug)
 
         // Format: namespace_stream_topic

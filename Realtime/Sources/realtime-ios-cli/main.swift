@@ -87,6 +87,72 @@ struct RealtimeCLI {
         try await realtime.close()
 
         print("\n✅ All stream management tests completed successfully")
+
+        // Test 7: Message History
+        print("\n🧪 Test 7: Message History")
+
+        // Reconnect for history tests
+        print("🔄 Reconnecting to NATS...")
+        try await realtime.connect()
+        print("✅ Reconnected to NATS")
+
+        // First, publish some test messages
+        print("\nPublishing test messages...")
+        let testTopic = "test_history_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
+
+        // Create stream for the test topic
+        try await realtime.createOrGetStream(for: testTopic)
+
+        // Record start time before publishing
+        let testStartTime = Date().addingTimeInterval(-1)  // Start 1 second ago
+        print("Test start time: \(testStartTime)")
+
+        // Publish messages with different timestamps
+        let messages = [
+            ["content": "Message 1", "timestamp": Int(Date().timeIntervalSince1970)],
+            ["content": "Message 2", "timestamp": Int(Date().timeIntervalSince1970) + 1],
+            ["content": "Message 3", "timestamp": Int(Date().timeIntervalSince1970) + 2],
+        ]
+
+        for message in messages {
+            let success = try await realtime.publish(topic: testTopic, message: message)
+            if success {
+                print("✅ Published message: \(message)")
+            } else {
+                print("❌ Failed to publish message: \(message)")
+            }
+            // Add a delay between messages
+            try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
+        }
+
+        // Add a delay after publishing to ensure messages are stored
+        print("Waiting for messages to be stored...")
+        try await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
+
+        // Test history with date range
+        print("\nTesting history with date range...")
+        let endDate = Date().addingTimeInterval(5)  // End 5 seconds in the future
+        print("Start time: \(testStartTime)")
+        print("End time: \(endDate)")
+
+        let historyMessages = try await realtime.history(
+            topic: testTopic,
+            start: testStartTime,
+            end: endDate,
+            limit: 100
+        )
+
+        print("\nRetrieved \(historyMessages.count) messages:")
+        for message in historyMessages {
+            print("Message: \(message)")
+        }
+        print("✅ History test completed")
+
+        // Clean up
+        print("\n🧹 Cleaning up...")
+        try await realtime.close()
+
+        print("\n✅ All tests completed successfully")
     }
 }
 
