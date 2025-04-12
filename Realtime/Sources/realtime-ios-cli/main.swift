@@ -25,13 +25,15 @@ struct RealtimeCLI {
         print("Testing stream creation with new topic...")
         let testTopic1 =
             "test_stream_creation_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
-        try await realtime.createOrGetStream(for: testTopic1)
+        // Publish a message to trigger stream creation
+        _ = try await realtime.publish(topic: testTopic1, message: ["test": "stream_creation"])
         print("✅ Stream creation test completed")
 
         // Test 2: Stream Existence Check
         print("\n🧪 Test 2: Stream Existence Check")
         print("Checking if stream exists for the same topic...")
-        try await realtime.createOrGetStream(for: testTopic1)
+        // Publish another message to verify stream exists
+        _ = try await realtime.publish(topic: testTopic1, message: ["test": "stream_exists"])
         print("✅ Stream existence check completed")
 
         // Test 3: Stream Update
@@ -39,7 +41,8 @@ struct RealtimeCLI {
         print("Testing stream update with new subject...")
         let testTopic2 =
             "test_stream_update_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
-        try await realtime.createOrGetStream(for: testTopic2)
+        // Publish a message to trigger stream creation
+        _ = try await realtime.publish(topic: testTopic2, message: ["test": "stream_update"])
         print("✅ Stream update test completed")
 
         // Test 4: Multiple Topics in Same Stream
@@ -52,7 +55,8 @@ struct RealtimeCLI {
         ]
 
         for topic in topics {
-            try await realtime.createOrGetStream(for: topic)
+            // Publish a message to trigger stream creation
+            _ = try await realtime.publish(topic: topic, message: ["test": "multi_topic"])
             print("✅ Added topic: \(topic)")
         }
         print("✅ Multiple topics test completed")
@@ -61,7 +65,8 @@ struct RealtimeCLI {
         print("\n🧪 Test 5: Stream Reuse")
         print("Testing stream reuse with existing topics...")
         for topic in topics {
-            try await realtime.createOrGetStream(for: topic)
+            // Publish another message to verify stream reuse
+            _ = try await realtime.publish(topic: topic, message: ["test": "stream_reuse"])
             print("✅ Reused stream for topic: \(topic)")
         }
         print("✅ Stream reuse test completed")
@@ -79,7 +84,7 @@ struct RealtimeCLI {
         print("✅ Reconnected to NATS")
 
         // Try to use existing stream
-        try await realtime.createOrGetStream(for: testTopic1)
+        _ = try await realtime.publish(topic: testTopic1, message: ["test": "stream_recovery"])
         print("✅ Stream recovery test completed")
 
         // Clean up
@@ -90,30 +95,27 @@ struct RealtimeCLI {
 
         // Test 7: Message History
         print("\n🧪 Test 7: Message History")
-
+        
         // Reconnect for history tests
         print("🔄 Reconnecting to NATS...")
         try await realtime.connect()
         print("✅ Reconnected to NATS")
-
+        
         // First, publish some test messages
         print("\nPublishing test messages...")
         let testTopic = "test_history_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
-
-        // Create stream for the test topic
-        try await realtime.createOrGetStream(for: testTopic)
-
+        
         // Record start time before publishing
-        let testStartTime = Date().addingTimeInterval(-1)  // Start 1 second ago
+        let testStartTime = Date().addingTimeInterval(-1) // Start 1 second ago
         print("Test start time: \(testStartTime)")
-
+        
         // Publish messages with different timestamps
         let messages = [
             ["content": "Message 1", "timestamp": Int(Date().timeIntervalSince1970)],
             ["content": "Message 2", "timestamp": Int(Date().timeIntervalSince1970) + 1],
-            ["content": "Message 3", "timestamp": Int(Date().timeIntervalSince1970) + 2],
+            ["content": "Message 3", "timestamp": Int(Date().timeIntervalSince1970) + 2]
         ]
-
+        
         for message in messages {
             let success = try await realtime.publish(topic: testTopic, message: message)
             if success {
@@ -122,32 +124,32 @@ struct RealtimeCLI {
                 print("❌ Failed to publish message: \(message)")
             }
             // Add a delay between messages
-            try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
+            try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
         }
-
+        
         // Add a delay after publishing to ensure messages are stored
         print("Waiting for messages to be stored...")
-        try await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
-
+        try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+        
         // Test history with date range
         print("\nTesting history with date range...")
-        let endDate = Date().addingTimeInterval(5)  // End 5 seconds in the future
+        let endDate = Date().addingTimeInterval(5) // End 5 seconds in the future
         print("Start time: \(testStartTime)")
         print("End time: \(endDate)")
-
+        
         let historyMessages = try await realtime.history(
             topic: testTopic,
             start: testStartTime,
             end: endDate,
             limit: 100
         )
-
+        
         print("\nRetrieved \(historyMessages.count) messages:")
         for message in historyMessages {
             print("Message: \(message)")
         }
         print("✅ History test completed")
-
+        
         // Clean up
         print("\n🧹 Cleaning up...")
         try await realtime.close()

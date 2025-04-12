@@ -351,7 +351,7 @@ import SwiftMsgpack
 
         // Ensure stream exists only if the topic has not been initialized
         if !isSystemTopic && !initializedTopics.contains(topic) {
-            try await createOrGetStream(for: topic)
+            try await ensureStreamExists(for: topic)
         }
 
         // Encode the message with MessagePack
@@ -525,11 +525,10 @@ import SwiftMsgpack
         }
 
         // Format topic with namespace
-        let formattedTopic = try NatsConstants.Topics.formatTopic(
-            topic, namespace: currentNamespace)
+        let formattedTopic = try NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
 
         // Ensure stream exists
-        try await createOrGetStream(for: topic)
+        try await ensureStreamExists(for: topic)
 
         // Create unique consumer name for this history request
         let consumerName = "history_\(UUID().uuidString)"
@@ -554,10 +553,10 @@ import SwiftMsgpack
             // Create consumer
             let consumer = try await js.createConsumer(
                 stream: "\(currentNamespace)_stream", cfg: consumerConfig)
-
+            
             // Fetch messages with batch size and timeout
             let fetchResult = try await consumer.fetch(batch: batchSize, expires: 5)
-
+            
             for try await msg in fetchResult {
                 if let payload = msg.payload {
                     let decoder = MsgPackDecoder()
@@ -585,7 +584,7 @@ import SwiftMsgpack
                             }(),
                             "start": decodedMessage.start,
                         ]
-
+                        
                         messages.append(messageDict)
                         try await msg.ack()
                     }
@@ -599,7 +598,7 @@ import SwiftMsgpack
 
             // Clean up the consumer after use
             try? await js.deleteConsumer(stream: "\(currentNamespace)_stream", name: consumerName)
-
+            
             if isDebug {
                 print("✅ Retrieved \(messages.count) messages from history")
             }
@@ -966,7 +965,7 @@ import SwiftMsgpack
     }
 
     /// Create or get a JetStream stream
-    public func createOrGetStream(for topic: String) async throws {
+    private func createOrGetStream(for topic: String) async throws {
         guard isConnected else {
             throw RelayError.notConnected("Not connected to NATS server")
         }
