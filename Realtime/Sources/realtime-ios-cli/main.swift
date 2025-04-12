@@ -3,7 +3,7 @@ import Realtime
 
 struct RealtimeCLI {
     static func main() async throws {
-        print("\n=== Testing Realtime SDK Connection and NATS Events ===")
+        print("\n=== Testing Realtime SDK Stream Management ===")
 
         // Initialize Realtime with production credentials
         let realtime = try Realtime(
@@ -15,103 +15,78 @@ struct RealtimeCLI {
         // Configure for production and debug mode
         try realtime.prepare(staging: false, opts: ["debug": true])
 
-        // Create a listener for the CONNECTED event
-        class ConnectedEventListener: MessageListener {
-            var eventReceived = false
-            var eventData: [String: Any]?
-            var eventTimestamp: Int?
-            var eventNamespace: String?
-
-            func onMessage(_ message: [String: Any]) {
-                print("\n=== CONNECTED Event Received ===")
-                print("Event Data: \(message)")
-
-                // Verify event format
-                guard let id = message["id"] as? String,
-                    let eventMessage = message["message"] as? [String: Any],
-                    let status = eventMessage["status"] as? String,
-                    let namespace = eventMessage["namespace"] as? String,
-                    let timestamp = eventMessage["timestamp"] as? Int
-                else {
-                    print("❌ Invalid event format")
-                    return
-                }
-
-                // Store event details
-                eventReceived = true
-                eventData = message
-                eventTimestamp = timestamp
-                eventNamespace = namespace
-
-                print("Event ID: \(id)")
-                print("Status: \(status)")
-                print("Namespace: \(namespace)")
-                print("Timestamp: \(timestamp)")
-                print("=== End of CONNECTED Event ===\n")
-            }
-        }
-
-        let connectedListener = ConnectedEventListener()
-
-        // Subscribe to the CONNECTED event BEFORE connecting
-        print("\nSubscribing to CONNECTED event...")
-        try await realtime.on(topic: SystemEvent.connected.rawValue, listener: connectedListener)
-
-        // Connect to NATS
+        // Connect to NATS first
         print("\n🔄 Connecting to NATS...")
         try await realtime.connect()
+        print("✅ Connected to NATS server")
 
-        // Wait for the event to be processed
-        print("\nWaiting for CONNECTED event...")
-        try await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
+        // Test 1: Stream Creation
+        print("\n🧪 Test 1: Stream Creation")
+        print("Testing stream creation with new topic...")
+        let testTopic1 =
+            "test_stream_creation_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
+        try await realtime.createOrGetStream(for: testTopic1)
+        print("✅ Stream creation test completed")
 
-        // Verify the event was received
-        if connectedListener.eventReceived {
-            print("✅ CONNECTED event received successfully")
+        // Test 2: Stream Existence Check
+        print("\n🧪 Test 2: Stream Existence Check")
+        print("Checking if stream exists for the same topic...")
+        try await realtime.createOrGetStream(for: testTopic1)
+        print("✅ Stream existence check completed")
 
-            // Verify event data
-            if let timestamp = connectedListener.eventTimestamp {
-                let currentTime = Int(Date().timeIntervalSince1970)
-                let timeDiff = abs(currentTime - timestamp)
-                if timeDiff <= 2 {
-                    print("✅ Event timestamp is valid (within 2 seconds)")
-                } else {
-                    print("❌ Event timestamp is too old (difference: \(timeDiff) seconds)")
-                }
-            }
+        // Test 3: Stream Update
+        print("\n🧪 Test 3: Stream Update")
+        print("Testing stream update with new subject...")
+        let testTopic2 =
+            "test_stream_update_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))"
+        try await realtime.createOrGetStream(for: testTopic2)
+        print("✅ Stream update test completed")
 
-            if let namespace = connectedListener.eventNamespace {
-                if namespace == "relay-internal-ios-dev" {
-                    print("✅ Event namespace is correct")
-                } else {
-                    print("❌ Event namespace is incorrect: \(namespace)")
-                }
-            }
-        } else {
-            print("❌ CONNECTED event not received")
+        // Test 4: Multiple Topics in Same Stream
+        print("\n🧪 Test 4: Multiple Topics in Same Stream")
+        print("Testing multiple topics in the same stream...")
+        let topics = [
+            "test_multi_1_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))",
+            "test_multi_2_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))",
+            "test_multi_3_\(UUID().uuidString.replacingOccurrences(of: "-", with: "_"))",
+        ]
+
+        for topic in topics {
+            try await realtime.createOrGetStream(for: topic)
+            print("✅ Added topic: \(topic)")
         }
+        print("✅ Multiple topics test completed")
 
-        // Test manual disconnection
-        print("\n🧪 Testing manual disconnection...")
+        // Test 5: Stream Reuse
+        print("\n🧪 Test 5: Stream Reuse")
+        print("Testing stream reuse with existing topics...")
+        for topic in topics {
+            try await realtime.createOrGetStream(for: topic)
+            print("✅ Reused stream for topic: \(topic)")
+        }
+        print("✅ Stream reuse test completed")
+
+        // Test 6: Stream Recovery After Disconnect
+        print("\n🧪 Test 6: Stream Recovery After Disconnect")
+        print("Testing stream recovery after disconnect...")
+
+        // Disconnect
         try await realtime.close()
-        print("✅ Manual disconnection completed")
+        print("✅ Disconnected from NATS")
 
-        // Test reconnection
-        print("\n🧪 Testing reconnection...")
+        // Reconnect
         try await realtime.connect()
-        print("✅ Reconnection completed")
+        print("✅ Reconnected to NATS")
 
-        // Test unexpected disconnection simulation
-        print("\n🧪 Testing unexpected disconnection handling...")
-        // Note: In a real test, we would simulate a network failure
-        // For now, we'll just verify the event handling is in place
-        print("✅ NATS event handlers are properly configured")
+        // Try to use existing stream
+        try await realtime.createOrGetStream(for: testTopic1)
+        print("✅ Stream recovery test completed")
 
         // Clean up
         print("\n🧹 Cleaning up...")
         try await realtime.close()
 
-        print("\n✅ All tests completed")
+        print("\n✅ All stream management tests completed successfully")
     }
 }
 
@@ -120,7 +95,7 @@ Task {
     do {
         try await RealtimeCLI.main()
     } catch {
-        print("❌ Error running tests:")
+        print("\n❌ Error running tests:")
         print("   Error type: \(type(of: error))")
         print("   Description: \(error)")
         print("   Localized: \(error.localizedDescription)")

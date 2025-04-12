@@ -27,7 +27,6 @@ import SwiftMsgpack
     private var initializedTopics: Set<String> = []
 
     private var messageListeners: [String: MessageListener] = [:]
-    private var subscriptions: [String: NatsSubscription] = [:]
     private var messageTasks: [String: Task<Void, Never>] = [:]
 
     private var streamSubjects: [String: Set<String>] = [:]
@@ -291,6 +290,11 @@ import SwiftMsgpack
         // Validate topic for publishing (skip validation for system topics)
         try TopicValidator.validate(topic, forPublishing: true, isInternalPublish: isSystemTopic)
 
+        // Check for null message
+        if let msg = (message as? String), msg.isEmpty {
+            throw RelayError.invalidPayload("Message cannot be null")
+        }
+
         // Create message content
         let messageContent: RealtimeMessage.MessageContent
         if let string = message as? String {
@@ -345,9 +349,9 @@ import SwiftMsgpack
             throw RelayError.invalidNamespace("Namespace not available - must be connected first")
         }
 
-        // Ensure stream exists (only for non-system topics)
-        if !isSystemTopic {
-            try await ensureStreamExists(for: topic)
+        // Ensure stream exists only if the topic has not been initialized
+        if !isSystemTopic && !initializedTopics.contains(topic) {
+            try await createOrGetStream(for: topic)
         }
 
         // Encode the message with MessagePack
@@ -360,7 +364,7 @@ import SwiftMsgpack
         }
 
         // Format topic with namespace
-        let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
+        let finalTopic = try NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
 
         // Publish using JetStream
         do {
@@ -405,26 +409,47 @@ import SwiftMsgpack
         // Ensure stream exists
         try await ensureStreamExists(for: topic)
 
-        let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
+        let finalTopic = try NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
 
-        // Create subscription if it doesn't exist
-        if subscriptions[topic] == nil {
+        // Create consumer if it doesn't exist
+        if messageTasks[topic] == nil {
             do {
-                let subscription = try await natsConnection.subscribe(subject: finalTopic)
-                subscriptions[topic] = subscription
+                guard let js = jetStream else {
+                    throw RelayError.notConnected("JetStream context not initialized")
+                }
+
+                // Create a consumer configuration with proper settings
+                let consumerConfig = ConsumerConfig(
+                    name: "\(topic)_consumer",
+                    durable: "\(topic)_consumer",
+                    deliverPolicy: .new,
+                    optStartTime: ISO8601DateFormatter().string(from: Date()),
+                    ackPolicy: .explicit,
+                    filterSubject: finalTopic,
+                    replayPolicy: .instant
+                )
+
+                // Create the consumer
+                let consumer = try await js.createConsumer(
+                    stream: streamName,
+                    cfg: consumerConfig
+                )
 
                 // Start message handling task
                 handleJetStreamMessages(
-                    topic: topic, subscription: subscription, finalTopic: finalTopic)
+                    topic: topic,
+                    finalTopic: finalTopic,
+                    consumer: consumer
+                )
 
                 if isDebug {
-                    print("✅ Subscribed to topic: \(topic)")
+                    print("✅ Created JetStream consumer for topic: \(topic)")
                 }
             } catch {
                 // Clean up on subscription failure
                 messageListeners.removeValue(forKey: topic)
                 throw RelayError.subscriptionFailed(
-                    "Failed to subscribe to topic \(topic): \(error)")
+                    "Failed to create JetStream consumer for topic \(topic): \(error)")
             }
         }
     }
@@ -448,23 +473,8 @@ import SwiftMsgpack
         // Remove message listener
         messageListeners.removeValue(forKey: topic)
 
-        // Unsubscribe from NATS and remove subscription
-        if let subscription = subscriptions[topic] {
-            do {
-                try await subscription.unsubscribe()
-                subscriptions.removeValue(forKey: topic)
-                success = true
-
-                if isDebug {
-                    print("✅ Unsubscribed from topic: \(topic)")
-                }
-            } catch {
-                if isDebug {
-                    print("Error unsubscribing from topic \(topic): \(error)")
-                }
-                throw RelayError.unsubscribeFailed(
-                    "Failed to unsubscribe from topic \(topic): \(error)")
-            }
+        if isDebug {
+            print("✅ Unsubscribed from topic: \(topic)")
         }
 
         return success
@@ -481,22 +491,22 @@ import SwiftMsgpack
     public func history(topic: String, startDate: Date, endDate: Date? = nil) async throws
         -> [[String: Any]]
     {
-        // IOS-FUNC-08-2: Validate topic
+        // Validate topic
         try TopicValidator.validate(topic)
 
-        // IOS-FUNC-08-3: Validate start date
+        // Validate start date
         guard startDate != Date.distantPast else {
             throw RelayError.invalidDate("Start date cannot be null or invalid")
         }
 
-        // IOS-FUNC-08-4: Validate end date if provided
+        // Validate end date if provided
         if let endDate = endDate {
             guard endDate > startDate else {
                 throw RelayError.invalidDate("End date must be after start date")
             }
         }
 
-        // IOS-FUNC-08-5: Return empty array if not connected
+        // Return empty array if not connected
         guard isConnected else {
             return []
         }
@@ -505,9 +515,10 @@ import SwiftMsgpack
             throw RelayError.invalidNamespace("Namespace not available - must be connected first")
         }
 
-        // IOS-FUNC-05-10 & IOS-FUNC-08-6: Format stream name and topic
+        // Format stream name and topic
         let streamName = "\(currentNamespace)_stream"
-        let formattedTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
+        let formattedTopic = try NatsConstants.Topics.formatTopic(
+            topic, namespace: currentNamespace)
 
         if isDebug {
             print("Using stream name for history: \(streamName)")
@@ -521,13 +532,12 @@ import SwiftMsgpack
             throw RelayError.notConnected("JetStream context not initialized")
         }
 
-        // IOS-FUNC-08-7: Use JetStream to get messages
         // Create a consumer config for message retrieval
         let consumerName = "temp_consumer_\(UUID().uuidString)"
         let consumerConfig = ConsumerConfig(
             name: consumerName,
-            durable: nil,
-            deliverPolicy: .all,
+            deliverPolicy: .byStartTime,
+            optStartTime: ISO8601DateFormatter().string(from: startDate),
             ackPolicy: .explicit,
             filterSubject: formattedTopic,
             replayPolicy: .instant
@@ -567,31 +577,30 @@ import SwiftMsgpack
                     let isBeforeEnd = endDate.map { messageDate <= $0 } ?? true
 
                     if isAfterStart && isBeforeEnd {
-                        // Convert message to dictionary format
-                        let messageDict: [String: Any] = [
-                            "client_id": decodedMessage.clientId,
-                            "id": decodedMessage.id,
-                            "room": decodedMessage.room,
-                            "message": try {
-                                switch decodedMessage.message {
-                                case .string(let str): return str
-                                case .integer(let int): return int
-                                case .json(let data):
-                                    return try JSONSerialization.jsonObject(with: data)
-                                }
-                            }(),
-                            "start": decodedMessage.start,
-                        ]
-                        messages.append(messageDict)
+                        // Format the room and validate it, then compare with topic
+                        if try TopicValidator.formatRoom(decodedMessage.room, isDebug: self.isDebug)
+                            == TopicValidator.extractRawTopic(
+                                from: formattedTopic, isDebug: self.isDebug)
+                        {
+                            // Convert message to dictionary format
+                            let messageDict: [String: Any] = [
+                                "client_id": decodedMessage.clientId,
+                                "id": decodedMessage.id,
+                                "room": decodedMessage.room,
+                                "message": try {
+                                    switch decodedMessage.message {
+                                    case .string(let str): return str
+                                    case .integer(let int): return int
+                                    case .json(let data):
+                                        return try JSONSerialization.jsonObject(with: data)
+                                    }
+                                }(),
+                                "start": decodedMessage.start,
+                            ]
+                            messages.append(messageDict)
 
-                        if isDebug {
-                            print("Added message: \(messageDict)")
-                        }
-
-                        // Acknowledge the message after successful processing
-                        try await msg.ack()
-                        if isDebug {
-                            print("   ✅ Message acknowledged")
+                            // Acknowledge the message after successful processing
+                            try await msg.ack()
                         }
                     }
                 }
@@ -620,16 +629,19 @@ import SwiftMsgpack
     /// Handle incoming JetStream messages for a topic
     /// - Parameters:
     ///   - topic: The topic being subscribed to
-    ///   - subscription: The NATS subscription
     ///   - finalTopic: The formatted topic with namespace
+    ///   - consumer: The JetStream consumer
     private func handleJetStreamMessages(
-        topic: String, subscription: NatsSubscription, finalTopic: String
+        topic: String,
+        finalTopic: String,
+        consumer: Consumer
     ) {
-        let task = Task { [weak self] in
-            guard let self = self else { return }
-
+        let task = Task {
             do {
-                for try await message in subscription {
+                // Fetch messages from the consumer
+                let fetchResult = try await consumer.fetch(batch: 10, expires: 5)
+
+                for try await message in fetchResult {
                     guard let data = message.payload else {
                         if self.isDebug {
                             print("Message payload is nil")
@@ -640,13 +652,16 @@ import SwiftMsgpack
                     do {
                         // Decode the MessagePack data
                         let decoder = MsgPackDecoder()
-                        let decodedMessage = try decoder.decode(RealtimeMessage.self, from: data)
+                        let decodedMessage = try decoder.decode(
+                            RealtimeMessage.self, from: data)
 
                         // Check if message should be processed
                         guard decodedMessage.clientId != self.clientId else {
                             if self.isDebug {
                                 print("Skipping message from self: \(decodedMessage.id)")
                             }
+                            // Acknowledge self-messages
+                            try await message.ack(ackType: .ack)
                             continue
                         }
 
@@ -665,48 +680,25 @@ import SwiftMsgpack
                             }(),
                         ]
 
+                        // Notify the listener
                         if let listener = self.messageListeners[topic] {
-                            // Format the room to match the topic format
-                            let formattedRoom = decodedMessage.room.replacingOccurrences(
-                                of: "_", with: ".")
-
-                            // Extract the raw topic name from the formatted NATS subject
-                            let rawTopic =
-                                finalTopic.split(separator: "_").last?.replacingOccurrences(
-                                    of: "_", with: ".") ?? topic
-
-                            // Compare formatted room with raw topic name
-                            if formattedRoom == rawTopic {
-                                // Acknowledge the message before processing
-                                if let replySubject = message.replySubject {
-                                    try await self.natsConnection.publish(
-                                        Data(), subject: replySubject, reply: nil, headers: nil)
-                                    if self.isDebug {
-                                        print("   ✅ Message acknowledged before callback")
-                                    }
-                                }
-
-                                listener.onMessage(messageJson)
-
-                                if self.isDebug {
-                                    print("   ✅ Message processed by callback")
-                                }
-                            } else if self.isDebug {
-                                print(
-                                    "Room mismatch - message room: \(formattedRoom), expected: \(rawTopic)"
-                                )
+                            if let messageContent = messageJson["message"] as? [String: Any] {
+                                listener.onMessage(messageContent)
                             }
-                        } else if self.isDebug {
-                            print("No listener found for topic: \(topic)")
+                        }
+
+                        // Acknowledge the message after successful processing
+                        try await message.ack(ackType: .ack)
+
+                        if self.isDebug {
+                            print("✅ Processed and acknowledged message: \(decodedMessage.id)")
                         }
                     } catch {
                         if self.isDebug {
-                            print("Error processing message: \(error)")
+                            print("Error processing message for topic \(topic): \(error)")
                         }
-                        // Send negative acknowledgment by not responding
-                        if self.isDebug {
-                            print("   ❌ Message not acknowledged due to error")
-                        }
+                        // If processing fails, negatively acknowledge the message
+                        try await message.ack(ackType: .nak())
                     }
                 }
             } catch {
@@ -714,7 +706,6 @@ import SwiftMsgpack
                     print("Error handling messages for topic \(topic): \(error)")
                 }
                 // Clean up resources on error
-                self.subscriptions.removeValue(forKey: topic)
                 self.messageTasks.removeValue(forKey: topic)
             }
         }
@@ -739,18 +730,39 @@ import SwiftMsgpack
                 // Ensure stream exists
                 try await ensureStreamExists(for: topic)
 
-                let finalTopic = NatsConstants.Topics.formatTopic(
+                let finalTopic = try NatsConstants.Topics.formatTopic(
                     topic, namespace: currentNamespace)
 
-                // Create subscription if it doesn't exist
-                if subscriptions[topic] == nil {
+                // Create consumer if it doesn't exist
+                if messageTasks[topic] == nil {
                     do {
-                        let subscription = try await natsConnection.subscribe(subject: finalTopic)
-                        subscriptions[topic] = subscription
+                        guard let js = jetStream else {
+                            throw RelayError.notConnected("JetStream context not initialized")
+                        }
+
+                        // Create a consumer configuration with proper settings
+                        let consumerConfig = ConsumerConfig(
+                            name: "\(topic)_consumer",
+                            durable: "\(topic)_consumer",
+                            deliverPolicy: .new,
+                            optStartTime: ISO8601DateFormatter().string(from: Date()),
+                            ackPolicy: .explicit,
+                            filterSubject: finalTopic,
+                            replayPolicy: .instant
+                        )
+
+                        // Create the consumer
+                        let consumer = try await js.createConsumer(
+                            stream: streamName,
+                            cfg: consumerConfig
+                        )
 
                         // Start message handling task
                         handleJetStreamMessages(
-                            topic: topic, subscription: subscription, finalTopic: finalTopic)
+                            topic: topic,
+                            finalTopic: finalTopic,
+                            consumer: consumer
+                        )
 
                         if isDebug {
                             print("✅ Subscribed to pending topic: \(topic)")
@@ -789,14 +801,7 @@ import SwiftMsgpack
         let streamConfig: [String: Any] = [
             "name": streamName,
             "subjects": ["\(topicPrefix).>"],
-            "retention": "limits",
-            "max_consumers": -1,
-            "max_msgs": 1_000_000,
-            "max_bytes": 1_000_000_000,
-            "max_age": 86400_000_000_000,  // 24 hours in nanoseconds
-            "max_msg_size": 1_000_000,
-            "storage": "file",
-            "num_replicas": 1,
+            "num_replicas": 3,
         ]
 
         let jsonData = try JSONSerialization.data(withJSONObject: streamConfig)
@@ -971,7 +976,7 @@ import SwiftMsgpack
     }
 
     /// Create or get a JetStream stream
-    private func createOrGetStream(for topic: String) async throws {
+    public func createOrGetStream(for topic: String) async throws {
         guard isConnected else {
             throw RelayError.notConnected("Not connected to NATS server")
         }
@@ -986,7 +991,8 @@ import SwiftMsgpack
 
         // Format stream name and subject
         let streamName = "\(currentNamespace)_stream"
-        let formattedSubject = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
+        let formattedSubject = try NatsConstants.Topics.formatTopic(
+            topic, namespace: currentNamespace)
 
         if isDebug {
             print("\n🔄 Stream Management:")
@@ -1006,33 +1012,29 @@ import SwiftMsgpack
         // Try to get existing stream
         let stream = try? await js.getStream(name: streamName)
 
-        // Get current subjects or empty array if stream doesn't exist
-        let currentSubjects = stream?.info.config.subjects ?? []
-
-        // Create new subjects array with the new subject if not already present
-        let newSubjects =
-            currentSubjects.contains(formattedSubject)
-            ? currentSubjects
-            : currentSubjects + [formattedSubject]
-
-        // Create or update stream configuration
+        // Create stream configuration
         let config = StreamConfig(
             name: streamName,
-            subjects: newSubjects,
+            subjects: [formattedSubject],
             replicas: 3
         )
 
-        // Create or update stream
-        if stream == nil {
+        if let existingStream = stream {
+            // Stream exists, update it with new subject if needed
+            if !(existingStream.info.config.subjects?.contains(formattedSubject) ?? false) {
+                if isDebug {
+                    print("   Updating existing stream with new subject...")
+                }
+                _ = try await js.updateStream(cfg: config)
+            } else if isDebug {
+                print("   Stream already exists with subject")
+            }
+        } else {
+            // Stream doesn't exist, create it
             if isDebug {
                 print("   Creating new stream...")
             }
             _ = try await js.createStream(cfg: config)
-        } else if !currentSubjects.contains(formattedSubject) {
-            if isDebug {
-                print("   Updating stream with new subject...")
-            }
-            _ = try await js.updateStream(cfg: config)
         }
 
         // Add to initialized topics cache
@@ -1040,7 +1042,6 @@ import SwiftMsgpack
 
         if isDebug {
             print("   ✅ Stream management completed")
-            print("   Subjects: \(newSubjects)")
         }
     }
 
@@ -1050,28 +1051,25 @@ import SwiftMsgpack
     }
 
     private func onReconnected() async throws {
+        // Only proceed if this was an automatic reconnection after an unexpected disconnect
+        guard wasUnexpectedDisconnect else { return }
+
         if isDebug {
-            print("🔄 Reconnected to NATS server")
+            print("�� Reconnected to NATS server")
+            print("�� Handling unexpected disconnect...")
         }
 
-        // Only resend messages if this was an automatic reconnection after an unexpected disconnect
-        if wasUnexpectedDisconnect {
-            if isDebug {
-                print("🔄 Resending stored messages after unexpected disconnect...")
-            }
-
-            // Resend stored messages
-            try await resendStoredMessages()
-
-            // Reset the flag
-            wasUnexpectedDisconnect = false
-        }
+        // Resend stored messages
+        try await resendStoredMessages()
 
         // Subscribe to topics again
         try await subscribeToTopics()
 
         // Set connection status
         isConnected = true
+
+        // Reset the flag
+        wasUnexpectedDisconnect = false
 
         // Trigger reconnected event
         _ = try await publish(

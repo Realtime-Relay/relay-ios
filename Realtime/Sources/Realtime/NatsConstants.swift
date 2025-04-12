@@ -24,11 +24,21 @@ public enum NatsConstants {
     }
 
     public enum Topics {
-        public static func formatTopic(_ topic: String, namespace: String) -> String {
+        public static func formatTopic(_ topic: String, namespace: String, isDebug: Bool = false)
+            throws -> String
+        {
+            // Use TopicValidator to validate the topic
+            try TopicValidator.validate(topic, isDebug: isDebug)
+
             // Format: namespace_stream_topic
-            // Use components(separatedBy:) and joined(separator:) for more efficient string manipulation
             let formattedTopic = topic.components(separatedBy: ".").joined(separator: "_")
-            return [namespace, "stream", formattedTopic].joined(separator: "_")
+            let finalTopic = [namespace, "stream", formattedTopic].joined(separator: "_")
+
+            if isDebug {
+                print("✅ Formatted topic: \(finalTopic)")
+            }
+
+            return finalTopic
         }
     }
 }
