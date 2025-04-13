@@ -36,6 +36,7 @@ import SwiftMsgpack
     private var isResendingMessages = false
     private var wasUnexpectedDisconnect = false
     private var wasManualDisconnect = false
+    private var wasDisconnected = false  // Track if we were previously disconnected
 
     // MARK: - Initialization
 
@@ -1079,10 +1080,18 @@ import SwiftMsgpack
             if isDebug {
                 print("✅ NATS Event: Connected")
             }
-            try await onReconnected()
+            // Check if this is a reconnection after an unexpected disconnect
+            if  wasDisconnected && !wasManualDisconnect {
+                if isDebug {
+                    print("�� NATS Event: Reconnected after unexpected disconnect")
+                }
+                try await onReconnected()
+                wasDisconnected = false  // Reset disconnect flag
+            }
 
         case .disconnected, .closed:
             isConnected = false
+            wasDisconnected = true  // Set disconnect flag
             wasUnexpectedDisconnect = (event.kind().rawValue == NatsEvent.disconnected.kind().rawValue)
             if isDebug {
                 let eventType = (event.kind().rawValue == NatsEvent.disconnected.kind().rawValue) ? "Unexpected disconnection" : "Connection closed unexpectedly"
@@ -1109,6 +1118,7 @@ import SwiftMsgpack
                 print("⚠️ Server-initiated shutdown detected")
             }
             wasUnexpectedDisconnect = false
+            wasDisconnected = true  
 
         case .suspended:
             if isDebug {
