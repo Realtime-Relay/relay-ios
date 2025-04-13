@@ -1067,16 +1067,6 @@ import SwiftMsgpack
 
         // Reset the flag
         wasUnexpectedDisconnect = false
-
-        // Trigger reconnected event
-        _ = try await publish(
-            topic: SystemEvent.reconnected.rawValue,
-            message: [
-                "status": "reconnected",
-                "namespace": namespace as Any,
-                "timestamp": Int(Date().timeIntervalSince1970),
-            ]
-        )
     }
 
     private func handleNatsEvent(_ event: NatsEvent) async throws {
