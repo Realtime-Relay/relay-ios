@@ -1091,17 +1091,21 @@ import SwiftMsgpack
             }
             try await onReconnected()
 
-        case .disconnected:
+        case .disconnected, .closed:
             isConnected = false
-            wasUnexpectedDisconnect = true
+            wasUnexpectedDisconnect = (event.kind().rawValue == NatsEvent.disconnected.kind().rawValue)
             if isDebug {
-                print("⚠️ NATS Event: Unexpected disconnection")
+                let eventType = (event.kind().rawValue == NatsEvent.disconnected.kind().rawValue) ? "Unexpected disconnection" : "Connection closed unexpectedly"
+                print("⚠️ NATS Event: \(eventType)")
             }
-
-        case .closed:
-            isConnected = false
-            if isDebug {
-                print("🔒 NATS Event: Connection closed unexpectedly")
+            // Notify listeners about disconnection or closure
+            if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
+                let disconnectEvent: [String: Any] = [
+                    "status": "disconnected",
+                    "namespace": namespace as Any,
+                    "timestamp": Int(Date().timeIntervalSince1970)
+                ]
+                listener.onMessage(disconnectEvent)
             }
 
         case .error(let error):
