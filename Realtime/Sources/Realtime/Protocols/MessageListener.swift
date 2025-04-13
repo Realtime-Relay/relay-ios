@@ -6,12 +6,10 @@
 //
 import Foundation
 
-/// Protocol for receiving messages from the Realtime service
-public protocol MessageListener {
+/// Protocol for handling realtime messages
+/// - Note: This protocol is class-bound to support weak references
+public protocol MessageListener: AnyObject {
     /// Called when a message is received
-    /// - Parameter message: The message content which can be:
-    ///   - String: For text messages
-    ///   - Double: For numeric messages
-    ///   - [String: Any]: For JSON messages
+    /// - Parameter message: The message content (String, Double, or JSON object)
     func onMessage(_ message: Any)
 }

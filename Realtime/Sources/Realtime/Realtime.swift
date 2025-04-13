@@ -26,7 +26,7 @@ import SwiftMsgpack
     private var pendingTopics: Set<String> = []
     private var initializedTopics: Set<String> = []
 
-    private var messageListeners: [String: MessageListener] = [:]
+    private let listenerManager: ListenerManager
     private var messageTasks: [String: Task<Void, Never>] = [:]
 
     private var streamSubjects: [String: Set<String>] = [:]
@@ -49,6 +49,7 @@ import SwiftMsgpack
         self.secret = secret
         self.clientId = "ios_\(UUID().uuidString)"
         self.messageStorage = MessageStorage()
+        self.listenerManager = ListenerManager()
 
         // Configure NATS connection with required settings
         let options = NatsClientOptions()
@@ -185,7 +186,7 @@ import SwiftMsgpack
         isConnected = true
 
         // Execute CONNECTED event listener if it exists
-        if let connectedListener = messageListeners[SystemEvent.connected.rawValue] {
+        if let connectedListener = listenerManager.getListener(for: SystemEvent.connected.rawValue) {
             let connectedEvent: [String: Any] = [
                 "id": UUID().uuidString,
                 "message": [
@@ -336,11 +337,6 @@ import SwiftMsgpack
             return false
         }
 
-        // If connected, try to resend any stored messages first (only for non-system topics)
-        if !isSystemTopic {
-            try await resendStoredMessages()
-        }
-
         guard let js = jetStream else {
             throw RelayError.notConnected("JetStream context not initialized")
         }
@@ -393,8 +389,8 @@ import SwiftMsgpack
     public func on(topic: String, listener: MessageListener) async throws {
         try TopicValidator.validate(topic)
 
-        // Store the listener
-        messageListeners[topic] = listener
+        // Store the listener using the manager
+        listenerManager.addListener(listener, for: topic)
 
         // If not connected, add to pending topics
         guard isConnected else {
@@ -445,7 +441,7 @@ import SwiftMsgpack
                 }
             } catch {
                 // Clean up on subscription failure
-                messageListeners.removeValue(forKey: topic)
+                listenerManager.removeListener(for: topic)
                 throw RelayError.subscriptionFailed(
                     "Failed to create JetStream consumer for topic \(topic): \(error)")
             }
@@ -468,8 +464,8 @@ import SwiftMsgpack
             success = true
         }
 
-        // Remove message listener
-        messageListeners.removeValue(forKey: topic)
+        // Remove message listener using the manager
+        listenerManager.removeListener(for: topic)
 
         if isDebug {
             print("✅ Unsubscribed from topic: \(topic)")
@@ -665,7 +661,7 @@ import SwiftMsgpack
                         }
 
                         // Notify the listener with just the message content
-                        if let listener = self.messageListeners[topic] {
+                        if let listener = self.listenerManager.getListener(for: topic) {
                             listener.onMessage(messageContent)
                         }
 
@@ -689,6 +685,7 @@ import SwiftMsgpack
                 }
                 // Clean up resources on error
                 self.messageTasks.removeValue(forKey: topic)
+                self.listenerManager.removeListener(for: topic)
             }
         }
 
@@ -753,7 +750,7 @@ import SwiftMsgpack
                             print("Error subscribing to topic \(topic): \(error)")
                         }
                         // Clean up on subscription failure
-                        messageListeners.removeValue(forKey: topic)
+                        listenerManager.removeListener(for: topic)
                     }
                 }
             } catch {
