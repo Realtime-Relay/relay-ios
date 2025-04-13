@@ -389,7 +389,16 @@ import SwiftMsgpack
     public func on(topic: String, listener: MessageListener) async throws {
         try TopicValidator.validate(topic)
 
+        // Check if listener already exists for this topic 
+        if listenerManager.hasListener(for: topic) {
+            if isDebug {
+                print("⚠️ Listener already exists for topic: \(topic)")
+            }
+            return
+        }
+
         // Store the listener using the manager
+        // Note: Not adding topic if it already exists
         listenerManager.addListener(listener, for: topic)
 
         // If not connected, add to pending topics
