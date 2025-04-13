@@ -398,12 +398,16 @@ import SwiftMsgpack
         }
 
         // Store the listener using the manager
-        // Note: Not adding topic if it already exists
         listenerManager.addListener(listener, for: topic)
 
-        // If not connected, add to pending topics
+        let isSystemTopic = SystemEvent.reservedTopics.contains(topic)
+
         guard isConnected else {
-            pendingTopics.insert(topic)
+            if !isSystemTopic {
+                pendingTopics.insert(topic)
+            } else if isDebug {
+                print("⚠️ Skipping system topic subscription while disconnected: \(topic)")
+            }
             return
         }
 
@@ -416,44 +420,50 @@ import SwiftMsgpack
 
         let finalTopic = try NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
 
-        // Create consumer if it doesn't exist
-        if messageTasks[topic] == nil {
-            do {
-                guard let js = jetStream else {
-                    throw RelayError.notConnected("JetStream context not initialized")
-                }
-
-                // Create a consumer configuration with proper settings
-                let consumerConfig = ConsumerConfig(
-                    name: "\(topic)_consumer",
-                    durable: "\(topic)_consumer",
-                    deliverPolicy: .all,
-                    ackPolicy: .explicit,
-                    filterSubject: finalTopic
-                )
-
-                // Create the consumer
-                let consumer = try await js.createConsumer(
-                    stream: streamName,
-                    cfg: consumerConfig
-                )
-
-                // Start message handling task
-                handleJetStreamMessages(
-                    topic: topic,
-                    finalTopic: finalTopic,
-                    consumer: consumer
-                )
-
-                if isDebug {
-                    print("✅ Created JetStream consumer for topic: \(topic)")
-                }
-            } catch {
-                // Clean up on subscription failure
-                listenerManager.removeListener(for: topic)
-                throw RelayError.subscriptionFailed(
-                    "Failed to create JetStream consumer for topic \(topic): \(error)")
+        // Check if consumer already exists
+        if messageTasks[topic] != nil {
+            if isDebug {
+                print("⚠️ Consumer already exists for topic: \(topic)")
             }
+            return
+        }
+
+        // Create consumer if it doesn't exist
+        do {
+            guard let js = jetStream else {
+                throw RelayError.notConnected("JetStream context not initialized")
+            }
+
+            // Create a consumer configuration with proper settings
+            let consumerConfig = ConsumerConfig(
+                name: "\(topic)_consumer",
+                deliverPolicy: .all,
+                ackPolicy: .explicit,
+                filterSubject: finalTopic,
+                replayPolicy: .instant
+            )
+
+            // Create the consumer
+            let consumer = try await js.createConsumer(
+                stream: streamName,
+                cfg: consumerConfig
+            )
+
+            // Start message handling task
+            handleJetStreamMessages(
+                topic: topic,
+                finalTopic: finalTopic,
+                consumer: consumer
+            )
+
+            if isDebug {
+                print("✅ Created JetStream consumer for topic: \(topic)")
+            }
+        } catch {
+            // Clean up on subscription failure
+            listenerManager.removeListener(for: topic)
+            throw RelayError.subscriptionFailed(
+                "Failed to create JetStream consumer for topic \(topic): \(error)")
         }
     }
 
@@ -540,18 +550,15 @@ import SwiftMsgpack
         // Create consumer configuration
         let consumerConfig = ConsumerConfig(
             name: consumerName,
-            durable: consumerName,  // Make it durable to ensure message delivery
             deliverPolicy: .byStartTime,
             optStartTime: ISO8601DateFormatter().string(from: start),
             ackPolicy: .explicit,
-            maxDeliver: 1,
             filterSubject: formattedTopic,
-            replayPolicy: .instant,
-            maxAckPending: limit ?? 100
+            replayPolicy: .instant
         )
 
         var messages: [[String: Any]] = []
-        let batchSize = limit ?? 100
+        let batchSize = limit ?? 2_000_000
 
         do {
             // Create consumer
@@ -721,45 +728,55 @@ import SwiftMsgpack
                 let finalTopic = try NatsConstants.Topics.formatTopic(
                     topic, namespace: currentNamespace)
 
-                // Create consumer if it doesn't exist
-                if messageTasks[topic] == nil {
-                    do {
-                        guard let js = jetStream else {
-                            throw RelayError.notConnected("JetStream context not initialized")
-                        }
+                // Skip if consumer already exists
+                if messageTasks[topic] != nil {
+                    if isDebug {
+                        print("⚠️ Consumer already exists for topic: \(topic)")
+                    }
+                    continue
+                }
 
-                        // Create a consumer configuration with proper settings
-                        let consumerConfig = ConsumerConfig(
-                            name: "\(topic)_consumer",
-                            durable: "\(topic)_consumer",
-                            deliverPolicy: .all,
-                            ackPolicy: .explicit,
-                            filterSubject: finalTopic
-                        )
+                do {
+                    guard let js = jetStream else {
+                        throw RelayError.notConnected("JetStream context not initialized")
+                    }
 
-                        // Create the consumer
-                        let consumer = try await js.createConsumer(
-                            stream: streamName,
-                            cfg: consumerConfig
-                        )
+                    // Create a consumer configuration with proper settings
+                    let consumerConfig = ConsumerConfig(
+                        name: "\(topic)_consumer",
+                        deliverPolicy: .all,
+                        ackPolicy: .explicit,
+                        filterSubject: finalTopic,
+                        replayPolicy: .instant
+                    )
 
-                        // Start message handling task
-                        handleJetStreamMessages(
-                            topic: topic,
-                            finalTopic: finalTopic,
-                            consumer: consumer
-                        )
+                    // Create the consumer
+                    let consumer = try await js.createConsumer(
+                        stream: streamName,
+                        cfg: consumerConfig
+                    )
 
-                        if isDebug {
-                            print("✅ Subscribed to pending topic: \(topic)")
-                        }
-                    } catch {
+                    // Start message handling task
+                    handleJetStreamMessages(
+                        topic: topic,
+                        finalTopic: finalTopic,
+                        consumer: consumer
+                    )
+
+                    if isDebug {
+                        print("✅ Subscribed to pending topic: \(topic)")
+                    }
+                } catch {
+                    // Only add to errors if it's not a "consumer already exists" error
+                    if !error.localizedDescription.contains("consumer already exists") {
                         errors.append(error)
                         if isDebug {
                             print("Error subscribing to topic \(topic): \(error)")
                         }
                         // Clean up on subscription failure
                         listenerManager.removeListener(for: topic)
+                    } else if isDebug {
+                        print("⚠️ Consumer already exists for topic: \(topic)")
                     }
                 }
             } catch {
@@ -773,9 +790,10 @@ import SwiftMsgpack
         // Clear pending topics after processing
         pendingTopics.removeAll()
 
-        // Throw if any errors occurred
-        if !errors.isEmpty {
-            throw RelayError.subscriptionFailed("Failed to subscribe to some topics: \(errors)")
+        // Only throw if we have non-consumer-exists errors
+        let nonConsumerErrors = errors.filter { !$0.localizedDescription.contains("consumer already exists") }
+        if !nonConsumerErrors.isEmpty {
+            throw RelayError.subscriptionFailed("Failed to subscribe to some topics: \(nonConsumerErrors)")
         }
     }
 
