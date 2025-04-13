@@ -737,8 +737,7 @@ import SwiftMsgpack
                         name: "\(topic)_consumer_\(UUID().uuidString)",
                         deliverPolicy: .all,
                         ackPolicy: .explicit,
-                        filterSubject: finalTopic,
-                        replayPolicy: .instant
+                        filterSubject: finalTopic
                     )
 
                     // Create the consumer
