@@ -427,7 +427,7 @@ import SwiftMsgpack
 
             // Create a consumer configuration with proper settings
             let consumerConfig = ConsumerConfig(
-                name: "\(topic)_consumer",
+                name: "\(topic)_consumer_\(UUID().uuidString)",
                 deliverPolicy: .all,
                 ackPolicy: .explicit,
                 filterSubject: finalTopic,
@@ -734,7 +734,7 @@ import SwiftMsgpack
 
                     // Create a consumer configuration with proper settings
                     let consumerConfig = ConsumerConfig(
-                        name: "\(topic)_consumer",
+                        name: "\(topic)_consumer_\(UUID().uuidString)",
                         deliverPolicy: .all,
                         ackPolicy: .explicit,
                         filterSubject: finalTopic,
