@@ -218,16 +218,6 @@ import SwiftMsgpack
             }
         }
 
-        // Also publish the event for other subscribers
-        _ = try await publish(
-            topic: SystemEvent.connected.rawValue,
-            message: [
-                "status": "connected",
-                "namespace": namespace as Any,
-                "timestamp": Int(Date().timeIntervalSince1970),
-            ]
-        )
-
         if self.isDebug {
             print("✅ Connected and ready")
         }
