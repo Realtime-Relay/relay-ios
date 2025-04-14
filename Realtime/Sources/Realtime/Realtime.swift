@@ -187,16 +187,8 @@ import SwiftMsgpack
 
         // Execute CONNECTED event listener if it exists
         if let connectedListener = listenerManager.getListener(for: SystemEvent.connected.rawValue) {
-            let connectedEvent: [String: Any] = [
-                "id": UUID().uuidString,
-                "message": [
-                    "status": "connected",
-                    "namespace": namespace,
-                    "timestamp": Int(Date().timeIntervalSince1970),
-                ],
-            ]
-            connectedListener.onMessage(connectedEvent)
-
+            connectedListener.onMessage([:])
+            
             if isDebug {
                 print("✅ Executed CONNECTED event listener")
             }
@@ -1132,22 +1124,12 @@ import SwiftMsgpack
                 }
                 // Execute RECONNECTING event listener
                 if let reconnectingListener = listenerManager.getListener(for: SystemEvent.reconnecting.rawValue) {
-                    let reconnectingEvent: [String: Any] = [
-                        "status": "reconnecting",
-                        "namespace": namespace as Any,
-                        "timestamp": Int(Date().timeIntervalSince1970)
-                    ]
-                    reconnectingListener.onMessage(reconnectingEvent)
+                    reconnectingListener.onMessage([:])
                 }
                 try await onReconnected()
                 // Execute RECONNECTED event listener
                 if let reconnectedListener = listenerManager.getListener(for: SystemEvent.reconnected.rawValue) {
-                    let reconnectedEvent: [String: Any] = [
-                        "status": "reconnected",
-                        "namespace": namespace as Any,
-                        "timestamp": Int(Date().timeIntervalSince1970)
-                    ]
-                    reconnectedListener.onMessage(reconnectedEvent)
+                    reconnectedListener.onMessage([:])
                 }
                 wasDisconnected = false  // Reset disconnect flag
             }
@@ -1162,12 +1144,7 @@ import SwiftMsgpack
             }
             // Notify listeners about disconnection or closure
             if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
-                let disconnectEvent: [String: Any] = [
-                    "status": "disconnected",
-                    "namespace": namespace as Any,
-                    "timestamp": Int(Date().timeIntervalSince1970)
-                ]
-                listener.onMessage(disconnectEvent)
+                listener.onMessage([:])
             }
 
             // clear stored messages
