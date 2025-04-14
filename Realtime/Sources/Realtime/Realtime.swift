@@ -386,6 +386,7 @@ import SwiftMsgpack
     ///   - topic: The topic to subscribe to
     ///   - listener: The message listener interface
     /// - Throws: TopicValidationError if topic is invalid
+    @discardableResult
     public func on(topic: String, listener: MessageListener) async throws -> Bool {
         try TopicValidator.validate(topic)
 
@@ -763,7 +764,8 @@ import SwiftMsgpack
                         name: "\(topic)_consumer_\(UUID().uuidString)",
                         deliverPolicy: .all,
                         ackPolicy: .explicit,
-                        filterSubject: finalTopic
+                        filterSubject: finalTopic,
+                        replayPolicy: .instant
                     )
 
                     // Create the consumer
