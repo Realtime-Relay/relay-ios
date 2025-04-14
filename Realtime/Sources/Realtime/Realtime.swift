@@ -386,7 +386,7 @@ import SwiftMsgpack
     ///   - topic: The topic to subscribe to
     ///   - listener: The message listener interface
     /// - Throws: TopicValidationError if topic is invalid
-    public func on(topic: String, listener: MessageListener) async throws {
+    public func on(topic: String, listener: MessageListener) async throws -> Bool {
         try TopicValidator.validate(topic)
 
         // Check if listener already exists for this topic 
@@ -394,7 +394,7 @@ import SwiftMsgpack
             if isDebug {
                 print("⚠️ Listener already exists for topic: \(topic)")
             }
-            return
+            return false
         }
 
         let isSystemTopic = SystemEvent.reservedTopics.contains(topic)
@@ -405,7 +405,7 @@ import SwiftMsgpack
             } else if isDebug {
                 print("⚠️ Skipping system topic subscription while disconnected: \(topic)")
             }
-            return
+            return false
         }
 
         guard let currentNamespace = namespace else {
@@ -422,7 +422,7 @@ import SwiftMsgpack
             if isDebug {
                 print("⚠️ Consumer already exists for topic: \(topic)")
             }
-            return
+            return false
         }
 
         // Create consumer if it doesn't exist
@@ -460,6 +460,8 @@ import SwiftMsgpack
             print("✅ Listener registered for topic: \(topic)")
             print("✅ Message handling task started for topic: \(topic)")
         }
+
+        return true
     }
 
     /// Unsubscribe from a topic and clean up associated resources
