@@ -30,7 +30,6 @@ import SwiftMsgpack
     private var messageTasks: [String: Task<Void, Never>] = [:]
 
     private var streamSubjects: [String: Set<String>] = [:]
-    private let streamName: String = "default_stream"
     private let topicPrefix: String = "relay_stream"
 
     private var isResendingMessages = false
@@ -388,9 +387,6 @@ import SwiftMsgpack
             return
         }
 
-        // Store the listener using the manager
-        listenerManager.addListener(listener, for: topic)
-
         let isSystemTopic = SystemEvent.reservedTopics.contains(topic)
 
         guard isConnected else {
@@ -420,41 +416,39 @@ import SwiftMsgpack
         }
 
         // Create consumer if it doesn't exist
-        do {
-            guard let js = jetStream else {
-                throw RelayError.notConnected("JetStream context not initialized")
-            }
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
+        }
 
-            // Create a consumer configuration with proper settings
-            let consumerConfig = ConsumerConfig(
-                name: "\(topic)_consumer_\(UUID().uuidString)",
-                deliverPolicy: .all,
-                ackPolicy: .explicit,
-                filterSubject: finalTopic,
-                replayPolicy: .instant
-            )
+        // Create a consumer configuration with proper settings
+        let consumerConfig = ConsumerConfig(
+            name: "\(topic)_consumer_\(UUID().uuidString)",
+            deliverPolicy: .all,
+            ackPolicy: .explicit,
+            filterSubject: finalTopic,
+            replayPolicy: .instant
+        )
 
-            // Create the consumer
-            let consumer = try await js.createConsumer(
-                stream: streamName,
-                cfg: consumerConfig
-            )
+        // Create the consumer with correct stream name
+        let consumer = try await js.createConsumer(
+            stream: "\(currentNamespace)_stream",
+            cfg: consumerConfig
+        )
 
-            // Start message handling task
-            handleJetStreamMessages(
-                topic: topic,
-                finalTopic: finalTopic,
-                consumer: consumer
-            )
+        // Store the listener using the manager
+        listenerManager.addListener(listener, for: topic)
 
-            if isDebug {
-                print("✅ Created JetStream consumer for topic: \(topic)")
-            }
-        } catch {
-            // Clean up on subscription failure
-            listenerManager.removeListener(for: topic)
-            throw RelayError.subscriptionFailed(
-                "Failed to create JetStream consumer for topic \(topic): \(error)")
+        // Start message handling task
+        handleJetStreamMessages(
+            topic: topic,
+            finalTopic: finalTopic,
+            consumer: consumer
+        )
+
+        if isDebug {
+            print("✅ Created JetStream consumer for topic: \(topic)")
+            print("✅ Listener registered for topic: \(topic)")
+            print("✅ Message handling task started for topic: \(topic)")
         }
     }
 
@@ -629,61 +623,71 @@ import SwiftMsgpack
     ) {
         let task = Task {
             do {
-                // Fetch messages from the consumer
-                let fetchResult = try await consumer.fetch(batch: 10, expires: 5)
+                while !Task.isCancelled {
+                    // Fetch messages from the consumer
+                    let fetchResult = try await consumer.fetch(batch: 10, expires: 5)
 
-                for try await message in fetchResult {
-                    guard let data = message.payload else {
-                        if self.isDebug {
-                            print("Message payload is nil")
-                        }
-                        continue
-                    }
-
-                    do {
-                        // Decode the MessagePack data
-                        let decoder = MsgPackDecoder()
-                        let decodedMessage = try decoder.decode(
-                            RealtimeMessage.self, from: data)
-
-                        // Check if message should be processed
-                        guard decodedMessage.clientId != self.clientId else {
+                    for try await message in fetchResult {
+                        guard let data = message.payload else {
                             if self.isDebug {
-                                print("Skipping message from self: \(decodedMessage.id)")
+                                print("Message payload is nil")
                             }
-                            // Acknowledge self-messages
-                            try await message.ack(ackType: .ack)
                             continue
                         }
 
-                        // Extract only the message content
-                        let messageContent: Any
-                        switch decodedMessage.message {
-                        case .string(let string):
-                            messageContent = string
-                        case .number(let number):
-                            messageContent = number
-                        case .json(let data):
-                            messageContent = try JSONSerialization.jsonObject(with: data)
-                        }
+                        do {
+                            // Decode the MessagePack data
+                            let decoder = MsgPackDecoder()
+                            let decodedMessage = try decoder.decode(
+                                RealtimeMessage.self, from: data)
 
-                        // Notify the listener with just the message content
-                        if let listener = self.listenerManager.getListener(for: topic) {
-                            listener.onMessage(messageContent)
-                        }
+                            // Check if message should be processed
+                            guard decodedMessage.clientId != self.clientId else {
+                                if self.isDebug {
+                                    print("Skipping message from self: \(decodedMessage.id)")
+                                }
+                                // Acknowledge self-messages
+                                try await message.ack(ackType: .ack)
+                                continue
+                            }
 
-                        // Acknowledge the message after successful processing
-                        try await message.ack(ackType: .ack)
+                            // Extract only the message content
+                            let messageContent: Any
+                            switch decodedMessage.message {
+                            case .string(let string):
+                                messageContent = string
+                            case .number(let number):
+                                messageContent = number
+                            case .json(let data):
+                                messageContent = try JSONSerialization.jsonObject(with: data)
+                            }
 
-                        if self.isDebug {
-                            print("✅ Processed and acknowledged message: \(decodedMessage.id)")
+                            // Notify the listener with just the message content on main thread
+                            if let listener = self.listenerManager.getListener(for: topic) {
+                                await MainActor.run {
+                                    listener.onMessage(messageContent)
+                                }
+                                
+                                if self.isDebug {
+                                    print("📥 Delivered message to listener: \(messageContent)")
+                                }
+                            } else if self.isDebug {
+                                print("⚠️ No listener found for topic: \(topic)")
+                            }
+
+                            // Acknowledge the message after successful processing
+                            try await message.ack(ackType: .ack)
+
+                            if self.isDebug {
+                                print("✅ Processed and acknowledged message: \(decodedMessage.id)")
+                            }
+                        } catch {
+                            if self.isDebug {
+                                print("Error processing message for topic \(topic): \(error)")
+                            }
+                            // If processing fails, negatively acknowledge the message
+                            try await message.ack(ackType: .nak())
                         }
-                    } catch {
-                        if self.isDebug {
-                            print("Error processing message for topic \(topic): \(error)")
-                        }
-                        // If processing fails, negatively acknowledge the message
-                        try await message.ack(ackType: .nak())
                     }
                 }
             } catch {
@@ -698,6 +702,10 @@ import SwiftMsgpack
 
         // Store task reference
         messageTasks[topic] = task
+
+        if isDebug {
+            print("✅ Message handling task started for topic: \(topic)")
+        }
     }
 
     /// Subscribe to all pending topics that were initialized before connection
@@ -742,7 +750,7 @@ import SwiftMsgpack
 
                     // Create the consumer
                     let consumer = try await js.createConsumer(
-                        stream: streamName,
+                        stream: "\(currentNamespace)_stream",
                         cfg: consumerConfig
                     )
 
@@ -791,6 +799,12 @@ import SwiftMsgpack
         guard isConnected else {
             throw RelayError.notConnected("Not connected to NATS server")
         }
+
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
+        }
+
+        let streamName = "\(currentNamespace)_stream"
 
         let streamConfig: [String: Any] = [
             "name": streamName,
@@ -1082,7 +1096,7 @@ import SwiftMsgpack
             // Check if this is a reconnection after an unexpected disconnect
             if  wasDisconnected && !wasManualDisconnect {
                 if isDebug {
-                    print("�� NATS Event: Reconnected after unexpected disconnect")
+                    print("✅ NATS Event: Reconnected after unexpected disconnect")
                 }
                 try await onReconnected()
                 wasDisconnected = false  // Reset disconnect flag
