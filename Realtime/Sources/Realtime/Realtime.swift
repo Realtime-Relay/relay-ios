@@ -53,8 +53,7 @@ import SwiftMsgpack
         let options = NatsClientOptions()
             .maxReconnects(1200)
             .reconnectWait(1000)
-            .token(apiKey)  // Use API key as token for authentication
-//            .noEcho(true)   Prevent receiving our own messages
+            .token(apiKey) 
 
         self.natsConnection = options.build()
         // Don't initialize jetStream here as we need a connected client
@@ -114,8 +113,7 @@ import SwiftMsgpack
             .credentialsFile(credentialsPath)
             .maxReconnects(1200)
             .reconnectWait(1000)
-            .token(apiKey)  // Use API key as token for authentication
-//            .noEcho(true)  // Prevent receiving our own messages
+            .token(apiKey) 
 
         // Rebuild connection with new credentials
         self.natsConnection = options.build()
