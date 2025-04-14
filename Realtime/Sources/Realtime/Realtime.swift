@@ -986,12 +986,12 @@ import SwiftMsgpack
                 let data = json["data"] as? [String: Any],
                 let namespace = data["namespace"] as? String
             else {
-                await close()
+                try await close()
                 throw RelayError.invalidPayload("Invalid response format or missing namespace")
             }
 
             if namespace.isEmpty {
-                await close()
+                try await close()
                 throw RelayError.invalidNamespace("Namespace cannot be empty")
             }
 
@@ -1000,7 +1000,7 @@ import SwiftMsgpack
             if self.isDebug {
                 print("Failed to get namespace: \(error)")
             }
-            await close()
+            try await close()
             throw RelayError.invalidNamespace("Failed to retrieve namespace: \(error)")
         }
     }
@@ -1122,11 +1122,29 @@ import SwiftMsgpack
                 print("✅ NATS Event: Connected")
             }
             // Check if this is a reconnection after an unexpected disconnect
-            if  wasDisconnected && !wasManualDisconnect {
+            if wasDisconnected && !wasManualDisconnect {
                 if isDebug {
                     print("✅ NATS Event: Reconnected after unexpected disconnect")
                 }
+                // Execute RECONNECTING event listener
+                if let reconnectingListener = listenerManager.getListener(for: SystemEvent.reconnecting.rawValue) {
+                    let reconnectingEvent: [String: Any] = [
+                        "status": "reconnecting",
+                        "namespace": namespace as Any,
+                        "timestamp": Int(Date().timeIntervalSince1970)
+                    ]
+                    reconnectingListener.onMessage(reconnectingEvent)
+                }
                 try await onReconnected()
+                // Execute RECONNECTED event listener
+                if let reconnectedListener = listenerManager.getListener(for: SystemEvent.reconnected.rawValue) {
+                    let reconnectedEvent: [String: Any] = [
+                        "status": "reconnected",
+                        "namespace": namespace as Any,
+                        "timestamp": Int(Date().timeIntervalSince1970)
+                    ]
+                    reconnectedListener.onMessage(reconnectedEvent)
+                }
                 wasDisconnected = false  // Reset disconnect flag
             }
 
