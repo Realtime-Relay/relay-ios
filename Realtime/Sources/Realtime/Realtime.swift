@@ -934,7 +934,7 @@ import SwiftMsgpack
         }
     }
 
-    /// Get the namespace for the current user
+    // Get the namespace for the current user
     private func getNamespace() async throws -> String {
         guard !self.apiKey.isEmpty else {
             throw RelayError.invalidCredentials("API key not set")
@@ -986,10 +986,12 @@ import SwiftMsgpack
                 let data = json["data"] as? [String: Any],
                 let namespace = data["namespace"] as? String
             else {
+                await close()
                 throw RelayError.invalidPayload("Invalid response format or missing namespace")
             }
 
             if namespace.isEmpty {
+                await close()
                 throw RelayError.invalidNamespace("Namespace cannot be empty")
             }
 
@@ -998,6 +1000,7 @@ import SwiftMsgpack
             if self.isDebug {
                 print("Failed to get namespace: \(error)")
             }
+            await close()
             throw RelayError.invalidNamespace("Failed to retrieve namespace: \(error)")
         }
     }
