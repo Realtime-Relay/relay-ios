@@ -19,7 +19,6 @@ import SwiftMsgpack
     private var credentialsPath: URL?
     private var isDebug: Bool = false
     private var clientId: String
-    private var existingStreams: Set<String> = []
     private var messageStorage: MessageStorage
     private var namespace: String?
     private var isStaging: Bool = false
@@ -29,7 +28,6 @@ import SwiftMsgpack
     private let listenerManager: ListenerManager
     private var messageTasks: [String: Task<Void, Never>] = [:]
 
-    private var streamSubjects: [String: Set<String>] = [:]
     private let topicPrefix: String = "relay_stream"
 
     private var isResendingMessages = false
@@ -240,6 +238,16 @@ import SwiftMsgpack
             task.cancel()
         }
         messageTasks.removeAll()
+
+        // Delete all consumers
+        for topic in initializedTopics {
+            try await deleteConsumer(for: topic)
+        }
+
+        // Delete the stream if we have a namespace
+        if let currentNamespace = namespace {
+            try await deleteStream(name: "\(currentNamespace)_stream")
+        }
 
         // Publish DISCONNECTED event before closing connection
         if let namespace = namespace {
@@ -470,6 +478,12 @@ import SwiftMsgpack
 
         // Remove message listener using the manager
         listenerManager.removeListener(for: topic)
+
+        // Delete consumer for this topic
+        try await deleteConsumer(for: topic)
+
+        // Remove from initialized topics
+        initializedTopics.remove(topic)
 
         if isDebug {
             print("✅ Unsubscribed from topic: \(topic)")
@@ -1146,6 +1160,53 @@ import SwiftMsgpack
             if isDebug {
                 print("⏸️ NATS Event: Connection suspended")
             }
+        }
+    }
+
+    /// Delete a consumer for a specific topic
+    /// - Parameter topic: The topic to delete the consumer for
+    private func deleteConsumer(for topic: String) async throws {
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
+        }
+
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
+        }
+
+        let streamName = "\(currentNamespace)_stream"
+        let consumerName = "\(topic)_consumer_\(UUID().uuidString)"
+
+        do {
+            try await js.deleteConsumer(stream: streamName, name: consumerName)
+            if isDebug {
+                print("✅ Deleted consumer for topic: \(topic)")
+            }
+        } catch {
+            if isDebug {
+                print("⚠️ Failed to delete consumer for topic \(topic): \(error)")
+            }
+            // Don't throw here as it's not critical
+        }
+    }
+
+    /// Delete a stream
+    /// - Parameter name: The name of the stream to delete
+    private func deleteStream(name: String) async throws {
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
+        }
+
+        do {
+            try await js.deleteStream(name: name)
+            if isDebug {
+                print("✅ Deleted stream: \(name)")
+            }
+        } catch {
+            if isDebug {
+                print("⚠️ Failed to delete stream \(name): \(error)")
+            }
+            // Don't throw here as it's not critical
         }
     }
 }
