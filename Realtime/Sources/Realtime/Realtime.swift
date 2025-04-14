@@ -1148,7 +1148,7 @@ import SwiftMsgpack
                 wasDisconnected = false  // Reset disconnect flag
             }
 
-        case .disconnected, .closed:
+        case .disconnected, .closed, .suspended:
             isConnected = false
             wasDisconnected = true  // Set disconnect flag
             wasUnexpectedDisconnect = (event.kind().rawValue == NatsEvent.disconnected.kind().rawValue)
@@ -1166,6 +1166,9 @@ import SwiftMsgpack
                 listener.onMessage(disconnectEvent)
             }
 
+            // clear stored messages
+            messageStorage.clearStoredMessages()    
+
         case .error(let error):
             if isDebug {
                 print("❌ NATS Event: Error occurred - \(error)")
@@ -1178,11 +1181,6 @@ import SwiftMsgpack
             }
             wasUnexpectedDisconnect = false
             wasDisconnected = true  
-
-        case .suspended:
-            if isDebug {
-                print("⏸️ NATS Event: Connection suspended")
-            }
         }
     }
 
