@@ -1023,16 +1023,20 @@ import SwiftMsgpack
         // Try to get existing stream
         let stream = try? await js.getStream(name: streamName)
 
-        // Create stream configuration
-        let config = StreamConfig(
-            name: streamName,
-            subjects: [formattedSubject],
-            replicas: 3
-        )
-
         if let existingStream = stream {
             // Stream exists, update it with new subject if needed
-            if !(existingStream.info.config.subjects?.contains(formattedSubject) ?? false) {
+            let existingSubjects = existingStream.info.config.subjects ?? []
+            let initializedSubjects = try initializedTopics.map {
+                try NatsConstants.Topics.formatTopic($0, namespace: currentNamespace)
+            }
+            let finalList = Set(existingSubjects + initializedSubjects + [formattedSubject])
+            let config = StreamConfig(
+                name: streamName,
+                subjects: Array(finalList),
+                replicas: 3
+            )
+
+            if !existingSubjects.contains(formattedSubject) {
                 if isDebug {
                     print("   Updating existing stream with new subject...")
                 }
@@ -1042,6 +1046,11 @@ import SwiftMsgpack
             }
         } else {
             // Stream doesn't exist, create it
+            let config = StreamConfig(
+                name: streamName,
+                subjects: [formattedSubject],
+                replicas: 3
+            )
             if isDebug {
                 print("   Creating new stream...")
             }
