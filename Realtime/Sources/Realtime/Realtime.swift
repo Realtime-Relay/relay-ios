@@ -406,7 +406,7 @@ import SwiftMsgpack
         }
 
         // Ensure stream exists
-        try await ensureStreamExists(for: topic)
+        try await createOrGetStream(for: topic)
 
         let finalTopic = try NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
 
@@ -733,7 +733,7 @@ import SwiftMsgpack
                 }
 
                 // Ensure stream exists
-                try await ensureStreamExists(for: topic)
+                try await createOrGetStream(for: topic)
 
                 let finalTopic = try NatsConstants.Topics.formatTopic(
                     topic, namespace: currentNamespace)
@@ -804,42 +804,6 @@ import SwiftMsgpack
         let nonConsumerErrors = errors.filter { !$0.localizedDescription.contains("consumer already exists") }
         if !nonConsumerErrors.isEmpty {
             throw RelayError.subscriptionFailed("Failed to subscribe to some topics: \(nonConsumerErrors)")
-        }
-    }
-
-    private func ensureStreamExists() async throws {
-        guard isConnected else {
-            throw RelayError.notConnected("Not connected to NATS server")
-        }
-
-        guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
-        }
-
-        let streamName = "\(currentNamespace)_stream"
-
-        let streamConfig: [String: Any] = [
-            "name": streamName,
-            "subjects": ["\(topicPrefix).>"],
-            "num_replicas": 3,
-        ]
-
-        let jsonData = try JSONSerialization.data(withJSONObject: streamConfig)
-
-        // Try to create the stream first
-        let createResponse = try? await natsConnection.request(
-            jsonData,
-            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.CREATE.\(streamName)",
-            timeout: 5.0
-        )
-
-        if createResponse == nil {
-            // If creation fails, try to update the stream
-            _ = try? await natsConnection.request(
-                jsonData,
-                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.UPDATE.\(streamName)",
-                timeout: 5.0
-            )
         }
     }
 
@@ -1002,7 +966,7 @@ import SwiftMsgpack
     }
 
     /// Create or get a JetStream stream
-    public func createOrGetStream(for topic: String) async throws {
+    private func createOrGetStream(for topic: String) async throws {
         guard isConnected else {
             throw RelayError.notConnected("Not connected to NATS server")
         }
@@ -1078,11 +1042,6 @@ import SwiftMsgpack
         if isDebug {
             print("   ✅ Stream management completed")
         }
-    }
-
-    /// Update references to ensureStreamExists to use createOrGetStream
-    private func ensureStreamExists(for topic: String) async throws {
-        try await createOrGetStream(for: topic)
     }
 
     private func onReconnected() async throws {
