@@ -237,17 +237,13 @@ import SwiftMsgpack
         for topic in initializedTopics {
             try await deleteConsumer(for: topic)
         }
-
-        // Publish DISCONNECTED event before closing connection
-        if let namespace = namespace {
-            _ = try await publish(
-                topic: SystemEvent.disconnected.rawValue,
-                message: [
-                    "status": "disconnected",
-                    "namespace": namespace as Any,
-                    "timestamp": Int(Date().timeIntervalSince1970),
-                ]
-            )
+        // Execute DISCONNECTED event listener if it exists
+        if let disconnectedListener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
+            disconnectedListener.onMessage([:])
+            
+            if isDebug {
+                print("✅ Executed DISCONNECTED event listener")
+            }
         }
 
         // Clear JetStream context
@@ -464,6 +460,18 @@ import SwiftMsgpack
     /// - Returns: true if successfully unsubscribed, false otherwise
     /// - Throws: TopicValidationError if topic is invalid
     public func off(topic: String) async throws -> Bool {
+        let isSystemTopic = SystemEvent.reservedTopics.contains(topic)
+        
+        // For system topics, just remove the listener
+        if isSystemTopic {
+            listenerManager.removeListener(for: topic)
+            if isDebug {
+                print("✅ Unsubscribed from system topic: \(topic)")
+            }
+            return true
+        }
+        
+        // For custom topics, validate and handle JetStream cleanup
         try TopicValidator.validate(topic)
 
         var success = false
