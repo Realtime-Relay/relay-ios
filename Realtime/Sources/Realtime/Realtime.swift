@@ -268,11 +268,8 @@ import SwiftMsgpack
     /// - Throws: TopicValidationError if topic is invalid
     /// - Throws: RelayError.invalidPayload if message is invalid
     public func publish(topic: String, message: Any) async throws -> Bool {
-        // Special handling for system topics
-        let isSystemTopic = SystemEvent.reservedTopics.contains(topic)
-
-        // Validate topic for publishing (skip validation for system topics)
-        try TopicValidator.validate(topic, forPublishing: true, isInternalPublish: isSystemTopic)
+        // Validate topic for publishing
+        try TopicValidator.validate(topic)
 
         // Check for null message
         if let msg = (message as? String), msg.isEmpty {
@@ -302,8 +299,8 @@ import SwiftMsgpack
             start: Int(Date().timeIntervalSince1970)
         )
 
-        // If not connected, store message locally (only for non-system topics)
-        if !isConnected && !isSystemTopic {
+        // If not connected, store message locally
+        if !isConnected {
             let messageDict: [String: Any] = [
                 "client_id": finalMessage.clientId,
                 "id": finalMessage.id,
@@ -329,7 +326,7 @@ import SwiftMsgpack
         }
 
         // Ensure stream exists only if the topic has not been initialized
-        if !isSystemTopic && !initializedTopics.contains(topic) {
+        if !initializedTopics.contains(topic) {
             try await createOrGetStream(for: topic)
         }
 
