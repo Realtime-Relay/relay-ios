@@ -894,7 +894,6 @@ import SwiftMsgpack
                 if !success {
                     return false
                 }
-
             }
             return true
         } catch {
