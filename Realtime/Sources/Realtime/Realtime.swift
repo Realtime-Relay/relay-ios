@@ -422,6 +422,7 @@ import SwiftMsgpack
         let consumerConfig = ConsumerConfig(
             name: "\(topic)_consumer_\(UUID().uuidString)",
             deliverPolicy: .all,
+            optStartTime: ISO8601DateFormatter().description,
             ackPolicy: .explicit,
             filterSubject: finalTopic,
             replayPolicy: .instant
@@ -750,6 +751,7 @@ import SwiftMsgpack
                     let consumerConfig = ConsumerConfig(
                         name: "\(topic)_consumer_\(UUID().uuidString)",
                         deliverPolicy: .all,
+                        optStartTime: ISO8601DateFormatter().description,
                         ackPolicy: .explicit,
                         filterSubject: finalTopic,
                         replayPolicy: .instant
