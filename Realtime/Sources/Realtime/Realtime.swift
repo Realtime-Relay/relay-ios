@@ -375,8 +375,6 @@ import SwiftMsgpack
     /// - Throws: TopicValidationError if topic is invalid
     @discardableResult
     public func on(topic: String, listener: MessageListener) async throws -> Bool {
-        try TopicValidator.validate(topic)
-
         // Check if listener already exists for this topic 
         if listenerManager.hasListener(for: topic) {
             if isDebug {
@@ -387,12 +385,20 @@ import SwiftMsgpack
 
         let isSystemTopic = SystemEvent.reservedTopics.contains(topic)
 
-        guard isConnected else {
-            if !isSystemTopic {
-                pendingTopics.insert(topic)
-            } else if isDebug {
-                print("⚠️ Skipping system topic subscription while disconnected: \(topic)")
+        // For system topics, just register the listener and return
+        if isSystemTopic {
+            listenerManager.addListener(listener, for: topic)
+            if isDebug {
+                print("✅ Registered listener for system topic: \(topic)")
             }
+            return true
+        }
+
+        // For custom topics, validate the topic name
+        try TopicValidator.validate(topic)
+
+        guard isConnected else {
+            pendingTopics.insert(topic)
             return false
         }
 
