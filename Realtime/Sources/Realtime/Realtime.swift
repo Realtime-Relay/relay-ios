@@ -906,10 +906,6 @@ import SwiftMsgpack
 
     // Get the namespace for the current user
     private func getNamespace() async throws -> String {
-        guard !self.apiKey.isEmpty else {
-            throw RelayError.invalidCredentials("API key not set")
-        }
-
         if self.isDebug {
             print("Requesting namespace with API key")
         }
@@ -1091,15 +1087,14 @@ import SwiftMsgpack
                 if isDebug {
                     print("✅ NATS Event: Reconnected after unexpected disconnect")
                 }
-                // Execute RECONNECTING event listener
-                if let reconnectingListener = listenerManager.getListener(for: SystemEvent.reconnecting.rawValue) {
-                    reconnectingListener.onMessage([:])
-                }
-                try await onReconnected()
+
                 // Execute RECONNECTED event listener
                 if let reconnectedListener = listenerManager.getListener(for: SystemEvent.reconnected.rawValue) {
                     reconnectedListener.onMessage([:])
                 }
+
+                try await onReconnected()
+                
                 wasDisconnected = false  // Reset disconnect flag
             }
 
