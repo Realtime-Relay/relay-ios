@@ -238,11 +238,6 @@ import SwiftMsgpack
             try await deleteConsumer(for: topic)
         }
 
-        // Delete the stream if we have a namespace
-        if let currentNamespace = namespace {
-            try await deleteStream(name: "\(currentNamespace)_stream")
-        }
-
         // Publish DISCONNECTED event before closing connection
         if let namespace = namespace {
             _ = try await publish(
@@ -1146,26 +1141,6 @@ import SwiftMsgpack
         } catch {
             if isDebug {
                 print("⚠️ Failed to delete consumer for topic \(topic): \(error)")
-            }
-            // Don't throw here as it's not critical
-        }
-    }
-
-    /// Delete a stream
-    /// - Parameter name: The name of the stream to delete
-    private func deleteStream(name: String) async throws {
-        guard let js = jetStream else {
-            throw RelayError.notConnected("JetStream context not initialized")
-        }
-
-        do {
-            try await js.deleteStream(name: name)
-            if isDebug {
-                print("✅ Deleted stream: \(name)")
-            }
-        } catch {
-            if isDebug {
-                print("⚠️ Failed to delete stream \(name): \(error)")
             }
             // Don't throw here as it's not critical
         }
