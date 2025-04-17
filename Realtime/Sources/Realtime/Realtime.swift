@@ -161,8 +161,8 @@ import SwiftMsgpack
         try await natsConnection.connect()
         self.isConnected = true
 
-        // Initialize JetStream after connection
-        self.jetStream = JetStreamContext(client: natsConnection)
+            // Initialize JetStream after connection
+            self.jetStream = JetStreamContext(client: natsConnection)
 
         if self.isDebug {
             print("✅ Connected to NATS server")
@@ -750,7 +750,7 @@ import SwiftMsgpack
                     // Create a consumer configuration with proper settings
                     let consumerConfig = ConsumerConfig(
                         name: "\(topic)_consumer_\(UUID().uuidString)",
-                        deliverPolicy: .all,
+                        deliverPolicy: .new,
                         ackPolicy: .explicit,
                         filterSubject: finalTopic,
                         replayPolicy: .instant
@@ -937,12 +937,10 @@ import SwiftMsgpack
                 let data = json["data"] as? [String: Any],
                 let namespace = data["namespace"] as? String
             else {
-                try await close()
                 throw RelayError.invalidPayload("Invalid response format or missing namespace")
             }
 
             if namespace.isEmpty {
-                try await close()
                 throw RelayError.invalidNamespace("Namespace cannot be empty")
             }
 
@@ -951,7 +949,6 @@ import SwiftMsgpack
             if self.isDebug {
                 print("Failed to get namespace: \(error)")
             }
-            try await close()
             throw RelayError.invalidNamespace("Failed to retrieve namespace: \(error)")
         }
     }
@@ -1147,7 +1144,7 @@ import SwiftMsgpack
 
         let consumerConfig = ConsumerConfig(
             name: consumerName,
-            deliverPolicy: .all,
+            deliverPolicy: .new,
             ackPolicy: .explicit,
             filterSubject: finalTopic,
             replayPolicy: .instant
