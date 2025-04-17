@@ -27,6 +27,7 @@ import SwiftMsgpack
 
     private let listenerManager: ListenerManager
     private var messageTasks: [String: Task<Void, Never>] = [:]
+    private var activeConsumers: Set<String> = []  // Track active consumers
 
     private let topicPrefix: String = "relay_stream"
 
@@ -233,10 +234,9 @@ import SwiftMsgpack
         }
         messageTasks.removeAll()
 
-        // Delete all consumers
-        for topic in initializedTopics {
-            try await deleteConsumer(for: topic)
-        }
+        // Clean up all consumers
+        try await cleanupAllConsumers()
+        
         // Execute DISCONNECTED event listener if it exists
         if let disconnectedListener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
             disconnectedListener.onMessage([:])
@@ -283,8 +283,15 @@ import SwiftMsgpack
         } else if let number = message as? Double {
             messageContent = .number(number)
         } else if let json = message as? [String: Any] {
-            let jsonData = try JSONSerialization.data(withJSONObject: json)
-            messageContent = .json(jsonData)
+            do {
+                let jsonData = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys, .prettyPrinted])
+                messageContent = .json(jsonData)
+            } catch {
+                if isDebug {
+                    print("❌ JSON serialization error: \(error)")
+                }
+                throw RelayError.invalidPayload("Failed to serialize JSON: \(error)")
+            }
         } else {
             throw RelayError.invalidPayload(
                 "Message must be a valid JSON object, string, or number")
@@ -412,26 +419,8 @@ import SwiftMsgpack
             return false
         }
 
-        // Create consumer if it doesn't exist
-        guard let js = jetStream else {
-            throw RelayError.notConnected("JetStream context not initialized")
-        }
-
-        // Create a consumer configuration with proper settings
-        let consumerConfig = ConsumerConfig(
-            name: "\(topic)_consumer_\(UUID().uuidString)",
-            deliverPolicy: .all,
-            optStartTime: ISO8601DateFormatter().description,
-            ackPolicy: .explicit,
-            filterSubject: finalTopic,
-            replayPolicy: .instant
-        )
-
-        // Create the consumer with correct stream name
-        let consumer = try await js.createConsumer(
-            stream: "\(currentNamespace)_stream",
-            cfg: consumerConfig
-        )
+        // Create or update consumer
+        let consumer = try await createOrUpdateConsumer(for: topic, finalTopic: finalTopic)
 
         // Store the listener using the manager
         listenerManager.addListener(listener, for: topic)
@@ -444,7 +433,7 @@ import SwiftMsgpack
         )
 
         if isDebug {
-            print("✅ Created JetStream consumer for topic: \(topic)")
+            print("✅ Created/Updated JetStream consumer for topic: \(topic)")
             print("✅ Listener registered for topic: \(topic)")
             print("✅ Message handling task started for topic: \(topic)")
         }
@@ -762,7 +751,6 @@ import SwiftMsgpack
                     let consumerConfig = ConsumerConfig(
                         name: "\(topic)_consumer_\(UUID().uuidString)",
                         deliverPolicy: .all,
-                        optStartTime: ISO8601DateFormatter().description,
                         ackPolicy: .explicit,
                         filterSubject: finalTopic,
                         replayPolicy: .instant
@@ -1126,9 +1114,11 @@ import SwiftMsgpack
         }
     }
 
-    /// Delete a consumer for a specific topic
-    /// - Parameter topic: The topic to delete the consumer for
-    private func deleteConsumer(for topic: String) async throws {
+    private func getConsumerName(for topic: String) -> String {
+        return "\(topic)_consumer"
+    }
+
+    private func getConsumer(for topic: String) async throws -> Consumer? {
         guard let js = jetStream else {
             throw RelayError.notConnected("JetStream context not initialized")
         }
@@ -1138,18 +1128,81 @@ import SwiftMsgpack
         }
 
         let streamName = "\(currentNamespace)_stream"
-        let consumerName = "\(topic)_consumer_\(UUID().uuidString)"
+        let consumerName = getConsumerName(for: topic)
+
+        return try? await js.getConsumer(stream: streamName, name: consumerName)
+    }
+
+    private func createOrUpdateConsumer(for topic: String, finalTopic: String) async throws -> Consumer {
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
+        }
+
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
+        }
+
+        let streamName = "\(currentNamespace)_stream"
+        let consumerName = getConsumerName(for: topic)
+
+        let consumerConfig = ConsumerConfig(
+            name: consumerName,
+            deliverPolicy: .all,
+            ackPolicy: .explicit,
+            filterSubject: finalTopic,
+            replayPolicy: .instant
+        )
+
+        let consumer = try await js.createOrUpdateConsumer(stream: streamName, cfg: consumerConfig)
+        activeConsumers.insert(topic)  // Add to active consumers
+        return consumer
+    }
+
+    /// Delete a consumer for a specific topic
+    /// - Parameter topic: The topic to delete the consumer for
+    private func deleteConsumer(for topic: String) async throws {
+        // Skip if consumer is not in active consumers
+        guard activeConsumers.contains(topic) else {
+            if isDebug {
+                print("ℹ️ Consumer not tracked for topic: \(topic) - skipping deletion")
+            }
+            return
+        }
+
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
+        }
+
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
+        }
+
+        let streamName = "\(currentNamespace)_stream"
+        let consumerName = getConsumerName(for: topic)
 
         do {
-            try await js.deleteConsumer(stream: streamName, name: consumerName)
-            if isDebug {
-                print("✅ Deleted consumer for topic: \(topic)")
+            // First check if consumer exists
+            if let _ = try await js.getConsumer(stream: streamName, name: consumerName) {
+                try await js.deleteConsumer(stream: streamName, name: consumerName)
+                activeConsumers.remove(topic)  // Remove from active consumers
+                if isDebug {
+                    print("✅ Deleted consumer for topic: \(topic)")
+                }
+            } else if isDebug {
+                print("ℹ️ Consumer not found for topic: \(topic) - skipping deletion")
             }
         } catch {
             if isDebug {
                 print("⚠️ Failed to delete consumer for topic \(topic): \(error)")
             }
-            // Don't throw here as it's not critical
+        }
+    }
+
+    /// Clean up all consumers
+    private func cleanupAllConsumers() async throws {
+        let topicsToCleanup = activeConsumers
+        for topic in topicsToCleanup {
+            try await deleteConsumer(for: topic)
         }
     }
 }
