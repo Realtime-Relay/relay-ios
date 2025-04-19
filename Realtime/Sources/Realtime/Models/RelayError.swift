@@ -16,7 +16,6 @@ public enum RelayError: LocalizedError {
     case invalidDate(String)
     case invalidNamespace(String)
     case subscriptionFailed(String)
-    case unsubscribeFailed(String)
     case invalidListener(String)
 
     public var errorDescription: String? {
@@ -37,8 +36,6 @@ public enum RelayError: LocalizedError {
             return "Invalid namespace: \(message)"
         case .subscriptionFailed(let message):
             return "Subscription failed: \(message)"
-        case .unsubscribeFailed(let message):
-            return "Unsubscribe failed: \(message)"
         case .invalidListener(let message):
             return "Invalid listener: \(message)"
         }

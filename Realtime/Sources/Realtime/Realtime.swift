@@ -23,13 +23,11 @@ import SwiftMsgpack
     private var namespace: String?
     private var isStaging: Bool = false
     private var pendingTopics: Set<String> = []
-    private var initializedTopics: Set<String> = []
+    private var hash: String?
 
     private let listenerManager: ListenerManager
     private var messageTasks: [String: Task<Void, Never>] = [:]
     private var activeConsumers: Set<String> = []  // Track active consumers
-
-    private let topicPrefix: String = "relay_stream"
 
     private var isResendingMessages = false
     private var wasUnexpectedDisconnect = false
@@ -328,14 +326,8 @@ import SwiftMsgpack
             throw RelayError.notConnected("JetStream context not initialized")
         }
 
-        guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
-        }
-
-        // Ensure stream exists only if the topic has not been initialized
-        if !initializedTopics.contains(topic) {
-            try await createOrGetStream(for: topic)
-        }
+        // Format topic with hash
+        let finalTopic = try formatTopic(topic)
 
         // Encode the message with MessagePack
         let encoder = MsgPackEncoder()
@@ -345,9 +337,6 @@ import SwiftMsgpack
         } catch {
             throw RelayError.invalidPayload("Failed to encode message with MessagePack: \(error)")
         }
-
-        // Format topic with namespace
-        let finalTopic = try NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
 
         // Publish using JetStream
         do {
@@ -402,14 +391,8 @@ import SwiftMsgpack
             return false
         }
 
-        guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
-        }
-
-        // Ensure stream exists
-        try await createOrGetStream(for: topic)
-
-        let finalTopic = try NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
+        // Format topic with hash
+        let finalTopic = try formatTopic(topic)
 
         // Check if consumer already exists
         if messageTasks[topic] != nil {
@@ -475,9 +458,6 @@ import SwiftMsgpack
         // Delete consumer for this topic
         try await deleteConsumer(for: topic)
 
-        // Remove from initialized topics
-        initializedTopics.remove(topic)
-
         if isDebug {
             print("✅ Unsubscribed from topic: \(topic)")
         }
@@ -519,22 +499,13 @@ import SwiftMsgpack
             return []
         }
 
-        // Ensure we have a namespace
-        guard let currentNamespace = namespace else {
-            throw RelayError.notConnected("No namespace available")
-        }
-
         // Get JetStream context
         guard let js = jetStream else {
             throw RelayError.notConnected("JetStream context not initialized")
         }
 
-        // Format topic with namespace
-        let formattedTopic = try NatsConstants.Topics.formatTopic(
-            topic, namespace: currentNamespace)
-
-        // Ensure stream exists
-        try await createOrGetStream(for: topic)
+        // Format topic with hash
+        let formattedTopic = try formatTopic(topic)
 
         // Create unique consumer name for this history request
         let consumerName = "history_\(UUID().uuidString)"
@@ -555,7 +526,7 @@ import SwiftMsgpack
         do {
             // Create consumer
             let consumer = try await js.createConsumer(
-                stream: "\(currentNamespace)_stream", cfg: consumerConfig)
+                stream: "\(namespace ?? "")_stream", cfg: consumerConfig)
 
             // Fetch messages with batch size and timeout
             let fetchResult = try await consumer.fetch(batch: batchSize, expires: 5)
@@ -600,7 +571,7 @@ import SwiftMsgpack
             }
 
             // Clean up the consumer after use
-            try? await js.deleteConsumer(stream: "\(currentNamespace)_stream", name: consumerName)
+            try? await js.deleteConsumer(stream: "\(namespace ?? "")_stream", name: consumerName)
 
             if isDebug {
                 print("✅ Retrieved \(messages.count) messages from history")
@@ -723,16 +694,8 @@ import SwiftMsgpack
 
         for topic in pendingTopics {
             do {
-                guard let currentNamespace = namespace else {
-                    throw RelayError.invalidNamespace(
-                        "Namespace not available - must be connected first")
-                }
-
-                // Ensure stream exists
-                try await createOrGetStream(for: topic)
-
-                let finalTopic = try NatsConstants.Topics.formatTopic(
-                    topic, namespace: currentNamespace)
+                // Format topic with hash
+                let finalTopic = try formatTopic(topic)
 
                 // Skip if consumer already exists
                 if messageTasks[topic] != nil {
@@ -758,7 +721,7 @@ import SwiftMsgpack
 
                     // Create the consumer
                     let consumer = try await js.createConsumer(
-                        stream: "\(currentNamespace)_stream",
+                        stream: finalTopic,
                         cfg: consumerConfig
                     )
 
@@ -825,8 +788,6 @@ import SwiftMsgpack
                 let messageBatch = messages.map { message in
                     (message.message, message.message["id"] as? String)
                 }
-                // Ensure stream exists for this topic
-                try await createOrGetStream(for: topic)
 
                 // Try to publish all messages for this topic at once
                 let success = try await publishBatch(topic: topic, messages: messageBatch)
@@ -935,14 +896,19 @@ import SwiftMsgpack
             guard
                 let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
                 let data = json["data"] as? [String: Any],
-                let namespace = data["namespace"] as? String
+                let namespace = data["namespace"] as? String,
+                let hash = data["hash"] as? String
             else {
-                throw RelayError.invalidPayload("Invalid response format or missing namespace")
+                throw RelayError.invalidPayload("Invalid response format or missing namespace/hash")
             }
 
-            if namespace.isEmpty {
-                throw RelayError.invalidNamespace("Namespace cannot be empty")
+            if namespace.isEmpty || hash.isEmpty {
+                throw RelayError.invalidNamespace("Namespace and hash cannot be empty")
             }
+
+            // Store both namespace and hash
+            self.namespace = namespace
+            self.hash = hash
 
             return namespace
         } catch {
@@ -953,83 +919,12 @@ import SwiftMsgpack
         }
     }
 
-    /// Create or get a JetStream stream
-    private func createOrGetStream(for topic: String) async throws {
-        guard isConnected else {
-            throw RelayError.notConnected("Not connected to NATS server")
+    // Helper method to format topic with hash
+    private func formatTopic(_ topic: String) throws -> String {
+        guard let hash = self.hash else {
+            throw RelayError.invalidNamespace("Hash not available - must be connected first")
         }
-
-        guard let js = jetStream else {
-            throw RelayError.notConnected("JetStream context not initialized")
-        }
-
-        guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
-        }
-
-        // Format stream name and subject
-        let streamName = "\(currentNamespace)_stream"
-        let formattedSubject = try NatsConstants.Topics.formatTopic(
-            topic, namespace: currentNamespace)
-
-        if isDebug {
-            print("\n🔄 Stream Management:")
-            print("   Topic: \(topic)")
-            print("   Stream Name: \(streamName)")
-            print("   Subject: \(formattedSubject)")
-        }
-
-        // Skip if topic already initialized
-        if initializedTopics.contains(topic) {
-            if isDebug {
-                print("   ℹ️ Topic already initialized")
-            }
-            return
-        }
-
-        // Try to get existing stream
-        let stream = try? await js.getStream(name: streamName)
-
-        if let existingStream = stream {
-            // Stream exists, update it with new subject if needed
-            let existingSubjects = existingStream.info.config.subjects ?? []
-            let initializedSubjects = try initializedTopics.map {
-                try NatsConstants.Topics.formatTopic($0, namespace: currentNamespace)
-            }
-            let finalList = Set(existingSubjects + initializedSubjects + [formattedSubject])
-            let config = StreamConfig(
-                name: streamName,
-                subjects: Array(finalList),
-                replicas: 3
-            )
-
-            if !existingSubjects.contains(formattedSubject) {
-                if isDebug {
-                    print("   Updating existing stream with new subject...")
-                }
-                _ = try await js.updateStream(cfg: config)
-            } else if isDebug {
-                print("   Stream already exists with subject")
-            }
-        } else {
-            // Stream doesn't exist, create it
-            let config = StreamConfig(
-                name: streamName,
-                subjects: [formattedSubject],
-                replicas: 3
-            )
-            if isDebug {
-                print("   Creating new stream...")
-            }
-            _ = try await js.createStream(cfg: config)
-        }
-
-        // Add to initialized topics cache
-        initializedTopics.insert(topic)
-
-        if isDebug {
-            print("   ✅ Stream management completed")
-        }
+        return "\(hash).\(topic)"
     }
 
     private func onReconnected() async throws {
