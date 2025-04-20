@@ -24,7 +24,11 @@ Task {
     do {
         // Run System Event Tests
         print("\n=== Running System Event Tests ===")
-        try await SystemEventTest.main()
+        if #available(iOS 15.0, *) {
+            try await SystemEventTest.main()
+        } else {
+            // Fallback on earlier versions
+        }
         
         // Initialize Realtime client for chat demo
         let realtime = try Realtime(
