@@ -20,9 +20,7 @@ A modern, thread-safe Swift package for real-time messaging in iOS and macOS app
 
 ## 📋 Requirements
 
-- iOS 15.0+ / macOS 12.0+
-- Swift 5.9+
-- Xcode 14.0+
+- iOS 15.0+ / macOS 13.0+
 
 ## 📦 Installation
 

@@ -327,7 +327,7 @@ import SwiftMsgpack
 
         // Format topic with hash
         let finalTopic = try formatTopic(topic)
-
+      
         // Encode the message with MessagePack
         let encoder = MsgPackEncoder()
         let encodedMessage: Data

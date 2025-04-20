@@ -14,7 +14,7 @@ public enum TopicValidationError: LocalizedError {
     case containsPeriod
     case systemTopicPublish
     case invalidFormat(String)
-
+  
     public var errorDescription: String? {
         switch self {
         case .emptyTopic:
