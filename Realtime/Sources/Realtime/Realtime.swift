@@ -263,6 +263,11 @@ import SwiftMsgpack
         // Validate topic for publishing
         try TopicValidator.validate(topic)
 
+        // Prevent publishing to system topics
+        if SystemEvent.reservedTopics.contains(topic) {
+            throw RelayError.invalidTopic("Cannot publish to system topic: \(topic)")
+        }
+
         // Check for null message
         if let msg = (message as? String), msg.isEmpty {
             throw RelayError.invalidPayload("Message cannot be null")
@@ -272,8 +277,8 @@ import SwiftMsgpack
         let messageContent: RealtimeMessage.MessageContent
         if let string = message as? String {
             messageContent = .string(string)
-        } else if let number = message as? Double {
-            messageContent = .number(number)
+        } else if let number = message as? NSNumber {
+            messageContent = .number(number.doubleValue)
         } else if let json = message as? [String: Any] {
             do {
                 let jsonData = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys, .prettyPrinted])

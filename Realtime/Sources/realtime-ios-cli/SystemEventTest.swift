@@ -70,9 +70,9 @@ public struct SystemEventTest {
         try await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second
 
         // Store messages while offline
-        _ = try await realtime.publish(topic: "test.offline", message: "Offline message 1")
-        _ = try await realtime.publish(topic: "test.offline", message: "Offline message 2")
-        _ = try await realtime.publish(topic: "test.offline", message: "Offline message 3")
+        _ = try await realtime.publish(topic: "test_offline", message: "Offline message 1")
+        _ = try await realtime.publish(topic: "test_offline", message: "Offline message 2")
+        _ = try await realtime.publish(topic: "test_offline", message: "Offline message 3")
 
         // Test 3: Reconnection and Message Resend
         print("\n🧪 Test 3: Testing reconnection and message resend...")
@@ -86,22 +86,22 @@ public struct SystemEventTest {
             print("  Time: \(Date().formatted())")
             print("  Details: \(message)")
         }
-        try await realtime.on(topic: "test.integer", listener: integerListener)
+        try await realtime.on(topic: "test_integer", listener: integerListener)
 
-        _ = try await realtime.publish(topic: "test.integer", message: 42)
+        _ = try await realtime.publish(topic: "test_integer", message: NSNumber(value: 42))
         try await Task.sleep(nanoseconds: 2_000_000_000)  // 2 seconds
 
         // Test 5: Topic Validation
         print("\n🧪 Test 5: Testing system topic validation...")
         do {
             _ = try await realtime.publish(topic: SystemEvent.connected.rawValue, message: "test")
-            print("❌ Error: Should not be able to publish to system topic")
+            print("❌ Test failed: Publishing to system topic should not be allowed")
         } catch {
-            print("✅ Successfully prevented publishing to system topic: systemTopicPublish")
+            print("✅ Test passed: Successfully prevented publishing to system topic (this is expected)")
         }
 
         // Test message publishing while connected
-        _ = try await realtime.publish(topic: "test.system", message: "Online message")
+        _ = try await realtime.publish(topic: "test_system", message: "Online message")
         print("Published message while online")
 
         // Simulate offline scenario

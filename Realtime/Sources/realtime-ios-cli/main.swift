@@ -1,32 +1,6 @@
 import Foundation
 import Realtime
 
-// Create a status listener
-class StatusListener: MessageListener {
-    func onMessage(_ message: Any) {
-        print("\n📡 Status Update:")
-        if let status = message as? [String: Any],
-            let statusType = status["status"] as? String
-        {
-            switch statusType {
-            case "connected":
-                print("   ✅ Connected to server")
-                print("   Namespace: \(status["namespace"] ?? "unknown")")
-            case "disconnected":
-                print("   ❌ Disconnected from server")
-            case "reconnecting":
-                print("   🔄 Reconnecting to server...")
-            case "reconnected":
-                print("   ✅ Reconnected to server")
-            case "messageResend":
-                print("   📤 Resending messages...")
-            default:
-                print("   ℹ️ Unknown status: \(statusType)")
-            }
-        }
-    }
-}
-
 // Create a chat message listener
 class ChatMessageListener: MessageListener {
     var messageCount: Int = 0
@@ -47,7 +21,11 @@ class ChatMessageListener: MessageListener {
 // Run the tests
 Task {
     do {
-        // Initialize Realtime client
+        // Run System Event Tests
+        print("\n=== Running System Event Tests ===")
+        try await SystemEventTest.main()
+        
+        // Initialize Realtime client for chat demo
         let realtime = try Realtime(
             apiKey:
                 "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJhdWQiOiJOQVRTIiwibmFtZSI6IklPUyBEZXYiLCJzdWIiOiJVQU9STjRWQkNXQzJORU1FVkpFWUY3VERIUVdYTUNLTExTWExNTjZRTjRBVU1WUElDSVJOSEpJRyIsIm5hdHMiOnsiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJzdWJzIjotMSwicHViIjp7ImRlbnkiOlsiPiJdfSwic3ViIjp7ImRlbnkiOlsiPiJdfSwib3JnX2RhdGEiOnsib3JnYW5pemF0aW9uIjoicmVsYXktaW50ZXJuYWwiLCJwcm9qZWN0IjoiSU9TIERldiJ9LCJpc3N1ZXJfYWNjb3VudCI6IkFDWklKWkNJWFNTVVU1NVlFR01QMjM2TUpJMkNSSVJGRkdJRDRKVlE2V1FZWlVXS08yVTdZNEJCIiwidHlwZSI6InVzZXIiLCJ2ZXJzaW9uIjoyfSwiaXNzIjoiQUNaSUpaQ0lYU1NVVTU1WUVHTVAyMzZNSkkyQ1JJUkZGR0lENEpWUTZXUVlaVVdLTzJVN1k0QkIiLCJpYXQiOjE3NDUwNTE2NjcsImp0aSI6IllVMG50TXFNcHhwWFNWbUp0OUJDazhhV0dxd0NwYytVQ0xwa05lWVBVcDNNRTNQWDBRcUJ2ZjBBbVJXMVRDamEvdTg2emIrYUVzSHVKUFNmOFB2SXJnPT0ifQ._LtZJnTADAnz3N6U76OaA-HCYq-XxckChk1WlHi_oZXfYP2vqcGIiNDFSQ-XpfjUTfKtXEuzcf_BDq54nSEMAA",
@@ -57,37 +35,9 @@ Task {
         // Prepare with production settings (staging: false)
         try realtime.prepare(staging: false, opts: ["debug": true])
 
-        // Set up status monitoring
-        print("\n=== Testing Connection Status Monitoring ===")
-        let statusListener = StatusListener()
-        try await realtime.on(topic: SystemEvent.connected.rawValue, listener: statusListener)
-        try await realtime.on(topic: SystemEvent.disconnected.rawValue, listener: statusListener)
-        try await realtime.on(topic: SystemEvent.reconnecting.rawValue, listener: statusListener)
-        try await realtime.on(topic: SystemEvent.reconnected.rawValue, listener: statusListener)
-        try await realtime.on(topic: SystemEvent.messageResend.rawValue, listener: statusListener)
-        print("✅ Status monitoring set up")
-
         // Connect to the service
         try await realtime.connect()
         print("✅ Successfully connected to Realtime service")
-
-        // Test disconnection
-        print("\n🧪 Testing disconnection...")
-        try await realtime.close()
-        print("✅ Disconnected from service")
-
-        // Test reconnection
-        print("\n🧪 Testing reconnection...")
-        try await realtime.connect()
-        print("✅ Reconnected to service")
-
-        // Run comprehensive tests
-        let tests = try RealtimeTests(
-            apiKey:
-                "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJhdWQiOiJOQVRTIiwibmFtZSI6IklPUyBEZXYiLCJzdWIiOiJVRFdYRDQ0Q01OSlpGU1NCTlNYU1ZNUUJFVE9JNlpQTkU3VkxGUEhKNk5DVE9WNTNTTkhJV0FaSiIsIm5hdHMiOnsiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJzdWJzIjotMSwicHViIjp7ImRlbnkiOlsiPiJdfSwic3ViIjp7ImRlbnkiOlsiPiJdfSwib3JnX2RhdGEiOnsib3JnYW5pemF0aW9uIjoicmVsYXktaW50ZXJuYWwiLCJwcm9qZWN0IjoiSU9TIERldiJ9LCJpc3N1ZXJfYWNjb3VudCI6IkFDWklKWkNJWFNTVVU1NVlFR01QMjM2TUpJMkNSSVJGRkdJRDRKVlE2V1FZWlVXS08yVTdZNEJCIiwidHlwZSI6InVzZXIiLCJ2ZXJzaW9uIjoyfSwiaXNzIjoiQUNaSUpaQ0lYU1NVVTU1WUVHTVAyMzZNSkkyQ1JJUkZGR0lENEpWUTZXUVlaVVdLTzJVN1k0QkIiLCJpYXQiOjE3NDM1MDMzNDUsImp0aSI6Ilo5SExZMi8xdnh1Q0psb1M5RnNjRkRobTN3Ym05SmgrRy9NTnBRQ21BTHBoODVFSmJMV0VBaGJvTkl6ZHZkZ0ZTd1QzcjRMU1M5RW56QkNpWWxpWTNnPT0ifQ.k2yssWr8KHbTMztg7QZpfbjJL1ZnLvX79KkSKnn5COaqUKvr0Hh6NNbLW8dwK6PG19FxhTXbGLSzMinSBcAkDA",
-            secret: "SUABDOOLKL6MUTUMSXHRQFCNAHRYABWGVY7FE7XU5T5RDKC4JWCVOMSJO4"
-        )
-        try await tests.runAllTests()
 
         // Demonstrate real-time pub/sub functionality
         print("\n=== Demonstrating Real-time Pub/Sub ===")
