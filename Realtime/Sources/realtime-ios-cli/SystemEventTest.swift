@@ -10,8 +10,8 @@ public struct SystemEventTest {
         // Initialize Realtime
         let realtime = try Realtime(
             apiKey:
-                "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJhdWQiOiJOQVRTIiwibmFtZSI6IklPUyBEZXYiLCJzdWIiOiJVRFdYRDQ0Q01OSlpGU1NCTlNYU1ZNUUJFVE9JNlpQTkU3VkxGUEhKNk5DVE9WNTNTTkhJV0FaSiIsIm5hdHMiOnsiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJzdWJzIjotMSwicHViIjp7ImRlbnkiOlsiPiJdfSwic3ViIjp7ImRlbnkiOlsiPiJdfSwib3JnX2RhdGEiOnsib3JnYW5pemF0aW9uIjoicmVsYXktaW50ZXJuYWwiLCJwcm9qZWN0IjoiSU9TIERldiJ9LCJpc3N1ZXJfYWNjb3VudCI6IkFDWklKWkNJWFNTVVU1NVlFR01QMjM2TUpJMkNSSVJGRkdJRDRKVlE2V1FZWlVXS08yVTdZNEJCIiwidHlwZSI6InVzZXIiLCJ2ZXJzaW9uIjoyfSwiaXNzIjoiQUNaSUpaQ0lYU1NVVTU1WUVHTVAyMzZNSkkyQ1JJUkZGR0lENEpWUTZXUVlaVVdLTzJVN1k0QkIiLCJpYXQiOjE3NDM1MDMzNDUsImp0aSI6Ilo5SExZMi8xdnh1Q0psb1M5RnNjRkRobTN3Ym05SmgrRy9NTnBRQ21BTHBoODVFSmJMV0VBaGJvTkl6ZHZkZ0ZTd1QzcjRMU1M5RW56QkNpWWxpWTNnPT0ifQ.k2yssWr8KHbTMztg7QZpfbjJL1ZnLvX79KkSKnn5COaqUKvr0Hh6NNbLW8dwK6PG19FxhTXbGLSzMinSBcAkDA",
-            secret: "SUABDOOLKL6MUTUMSXHRQFCNAHRYABWGVY7FE7XU5T5RDKC4JWCVOMSJO4"
+                "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJhdWQiOiJOQVRTIiwibmFtZSI6IklPUyBEZXYiLCJzdWIiOiJVQU9STjRWQkNXQzJORU1FVkpFWUY3VERIUVdYTUNLTExTWExNTjZRTjRBVU1WUElDSVJOSEpJRyIsIm5hdHMiOnsiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJzdWJzIjotMSwicHViIjp7ImRlbnkiOlsiPiJdfSwic3ViIjp7ImRlbnkiOlsiPiJdfSwib3JnX2RhdGEiOnsib3JnYW5pemF0aW9uIjoicmVsYXktaW50ZXJuYWwiLCJwcm9qZWN0IjoiSU9TIERldiJ9LCJpc3N1ZXJfYWNjb3VudCI6IkFDWklKWkNJWFNTVVU1NVlFR01QMjM2TUpJMkNSSVJGRkdJRDRKVlE2V1FZWlVXS08yVTdZNEJCIiwidHlwZSI6InVzZXIiLCJ2ZXJzaW9uIjoyfSwiaXNzIjoiQUNaSUpaQ0lYU1NVVTU1WUVHTVAyMzZNSkkyQ1JJUkZGR0lENEpWUTZXUVlaVVdLTzJVN1k0QkIiLCJpYXQiOjE3NDUwNTE2NjcsImp0aSI6IllVMG50TXFNcHhwWFNWbUp0OUJDazhhV0dxd0NwYytVQ0xwa05lWVBVcDNNRTNQWDBRcUJ2ZjBBbVJXMVRDamEvdTg2emIrYUVzSHVKUFNmOFB2SXJnPT0ifQ._LtZJnTADAnz3N6U76OaA-HCYq-XxckChk1WlHi_oZXfYP2vqcGIiNDFSQ-XpfjUTfKtXEuzcf_BDq54nSEMAA",
+            secret: "SUAPWRWRITWYL4YP7B5ZHU3W2G2ZPYJ47IN4UWNHLMFTSIJEOMQJWWSWGY"
         )
 
         // Configure with staging environment and debug mode
@@ -22,34 +22,34 @@ public struct SystemEventTest {
         print("\nSetting up system event listeners...")
 
         // Connected Event Listener
-        let connectedListener = TestMessageListenerSystem(name: "Connected") { _ in
-            print("System Event: Connected")
+        let connectedListener = TestMessageListenerSystem(name: SystemEvent.connected.rawValue) { _ in
+            print("System Event: \(SystemEvent.connected.rawValue)")
         }
         try await realtime.on(topic: SystemEvent.connected.rawValue, listener: connectedListener)
 
         // Disconnected Event Listener
-        let disconnectedListener = TestMessageListenerSystem(name: "Disconnected") { _ in
-            print("System Event: Disconnected")
+        let disconnectedListener = TestMessageListenerSystem(name: SystemEvent.disconnected.rawValue) { _ in
+            print("System Event: \(SystemEvent.disconnected.rawValue)")
         }
         try await realtime.on(
             topic: SystemEvent.disconnected.rawValue, listener: disconnectedListener)
 
         // Reconnecting Event Listener
-        let reconnectingListener = TestMessageListenerSystem(name: "Reconnecting") { _ in
-            print("System Event: Reconnecting")
+        let reconnectingListener = TestMessageListenerSystem(name: SystemEvent.reconnecting.rawValue) { _ in
+            print("System Event: \(SystemEvent.reconnecting.rawValue)")
         }
         try await realtime.on(
             topic: SystemEvent.reconnecting.rawValue, listener: reconnectingListener)
 
         // Reconnected Event Listener
-        let reconnectedListener = TestMessageListenerSystem(name: "Reconnected") { _ in
-            print("System Event: Reconnected")
+        let reconnectedListener = TestMessageListenerSystem(name: SystemEvent.reconnected.rawValue) { _ in
+            print("System Event: \(SystemEvent.reconnected.rawValue)")
         }
         try await realtime.on(
             topic: SystemEvent.reconnected.rawValue, listener: reconnectedListener)
 
         // Message Resend Event Listener
-        let messageResendListener = TestMessageListener(name: "MessageResend") { message in
+        let messageResendListener = TestMessageListener(name: SystemEvent.messageResend.rawValue) { message in
             if let count = message as? Int {
                 print("System Event: Resending \(count) messages")
             }

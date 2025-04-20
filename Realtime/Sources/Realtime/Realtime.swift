@@ -30,9 +30,9 @@ import SwiftMsgpack
     private var activeConsumers: Set<String> = []  // Track active consumers
 
     private var isResendingMessages = false
-    private var wasUnexpectedDisconnect = false
-    private var wasManualDisconnect = false
-    private var wasDisconnected = false  // Track if we were previously disconnected
+    private var wasDisconnected = false  // Only used for reconnection logic
+    private var wasUnexpectedDisconnect = false  // Only used for message resend logic
+    private var wasManualDisconnect = false  // Only used for message storage cleanup
 
     // MARK: - Initialization
 
@@ -199,13 +199,7 @@ import SwiftMsgpack
             guard let self = self else { return }
 
             Task {
-                do {
-                    try await self.handleNatsEvent(natsEvent)
-                } catch {
-                    if self.isDebug {
-                        print("❌ Error handling NATS event: \(error)")
-                    }
-                }
+                await self.handleNatsEvent(natsEvent)
             }
         }
 
@@ -766,87 +760,88 @@ import SwiftMsgpack
         }
     }
 
-    private func resendStoredMessages() async throws {
-        // Prevent recursive calls
+    func resendStoredMessages() async {
         guard !isResendingMessages else { return }
         isResendingMessages = true
-        defer { isResendingMessages = false }
-
-        let storedMessages = messageStorage.getStoredMessages()
-        guard !storedMessages.isEmpty else { return }
-
-        if isDebug {
-            print("📤 Resending \(storedMessages.count) stored messages...")
+        
+        defer {
+            isResendingMessages = false
         }
-
-        // Group messages by topic for batch publishing
-        let messagesByTopic = Dictionary(grouping: storedMessages) { $0.topic }
-
-        for (topic, messages) in messagesByTopic {
-            do {
-                // Create a batch of messages for this topic
-                let messageBatch = messages.map { message in
-                    (message.message, message.message["id"] as? String)
-                }
-
-                // Try to publish all messages for this topic at once
-                let success = try await publishBatch(topic: topic, messages: messageBatch)
-
-                if success {
-                    // Remove all successfully published messages
-                    for message in messages {
-                        if let messageId = message.message["id"] as? String {
-                            messageStorage.removeMessage(topic: topic, messageId: messageId)
+        
+        let storedMessages = messageStorage.getStoredMessages()
+        if storedMessages.isEmpty {
+            if isDebug {
+                print("ℹ️ No stored messages to resend")
+            }
+            return
+        }
+        
+        // Notify listeners that we're about to resend messages
+        if let listener = listenerManager.getListener(for: SystemEvent.messageResend.rawValue) {
+            listener.onMessage(["count": storedMessages.count])
+        }
+        
+        for message in storedMessages {
+            var retryCount = 0
+            let maxRetries = 3
+            
+            while retryCount < maxRetries {
+                if let rawMessage = message.message["message"] as? [String: Any] {
+                    do {
+                        let success = try await publish(
+                            topic: message.topic,
+                            message: rawMessage
+                        )
+                        
+                        if success {
+                            if isDebug {
+                                print("✅ Successfully resent message to topic: \(message.topic)")
+                            }
+                            // Remove the message from storage on successful resend
+                            messageStorage.removeMessage(topic: message.topic, messageId: message.message["id"] as? String ?? "")
+                            break // Exit retry loop on success
                         }
-                    }
-                    if isDebug {
-                        print(
-                            "✅ Successfully resent \(messages.count) messages for topic: \(topic)")
+                        
+                        retryCount += 1
+                        if retryCount < maxRetries {
+                            if isDebug {
+                                print("⚠️ Failed to resend message, attempt \(retryCount)/\(maxRetries)")
+                            }
+                            try await Task.sleep(nanoseconds: 500_000_000) // 500ms delay between retries
+                        }
+                    } catch {
+                        if isDebug {
+                            print("❌ Error during message resend: \(error)")
+                        }
+                        retryCount += 1
                     }
                 } else {
-                    // Mark all messages as resent to prevent repeated attempts
-                    for message in messages {
-                        if let messageId = message.message["id"] as? String {
-                            messageStorage.updateMessageStatus(
-                                topic: topic, messageId: messageId, resent: true)
-                        }
-                    }
                     if isDebug {
-                        print("❌ Failed to resend messages for topic: \(topic)")
+                        print("❌ Invalid message format in storage")
                     }
+                    break
                 }
-            } catch {
-                // Mark all messages as resent to prevent repeated attempts
-                for message in messages {
-                    if let messageId = message.message["id"] as? String {
-                        messageStorage.updateMessageStatus(
-                            topic: topic, messageId: messageId, resent: true)
-                    }
-                }
+            }
+            
+            if retryCount >= maxRetries {
+                messageStorage.updateMessageStatus(
+                    topic: message.topic,
+                    messageId: message.message["id"] as? String ?? "",
+                    resent: false
+                )
                 if isDebug {
-                    print("❌ Error resending messages for topic: \(topic), error: \(error)")
+                    print("❌ Failed to resend message after \(maxRetries) attempts")
                 }
             }
-        }
-    }
-
-    private func publishBatch(topic: String, messages: [(message: [String: Any], id: String?)])
-        async throws -> Bool
-    {
-        do {
-            // Publish all messages in sequence
-            for (message, _) in messages {
-                let success = try await publish(topic: topic, message: message)
-                if !success {
-                    return false
+            
+            // Add a small delay between messages
+            do {
+                try await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
+            } catch {
+                if isDebug {
+                    print("⚠️ Error during delay between messages: \(error)")
                 }
             }
-            return true
-        } catch {
-            if isDebug {
-                print("❌ Error publishing batch: \(error)")
-            }
-            return false
         }
     }
 
@@ -928,7 +923,7 @@ import SwiftMsgpack
     }
 
     private func onReconnected() async throws {
-        // Only proceed if this was an automatic reconnection after an unexpected disconnect
+        // Only proceed if this was an unexpected disconnect
         guard wasUnexpectedDisconnect else { return }
 
         if isDebug {
@@ -936,33 +931,52 @@ import SwiftMsgpack
             print("✅ Handling unexpected disconnect...")
         }
 
-        // Resend stored messages
-        try await resendStoredMessages()
+        // Wait for connection to be fully established
+        for _ in 0..<50 { // Wait up to 5 seconds
+            if isConnected {
+                break
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+        }
+
+        guard isConnected else {
+            if isDebug {
+                print("❌ Failed to establish connection for resending messages")
+            }
+            return
+        }
+
+        // Initialize JetStream after connection
+        self.jetStream = JetStreamContext(client: natsConnection)
+
+        // Get namespace if needed
+        if namespace == nil {
+            _ = try await getNamespace()
+        }
 
         // Subscribe to topics again
         try await subscribeToTopics()
 
-        // Set connection status
-        isConnected = true
-
-        // Reset the flag
-        wasUnexpectedDisconnect = false
+        if isDebug {
+            print("✅ Successfully completed reconnection process")
+        }
     }
 
-    private func handleNatsEvent(_ event: NatsEvent) async throws {
-        // Skip event handling if this was a manual disconnect
-        guard !wasManualDisconnect else { return }
-
+    private func handleNatsEvent(_ event: NatsEvent) async {
         switch event {
         case .connected:
             isConnected = true
             if isDebug {
                 print("✅ NATS Event: Connected")
             }
-            // Check if this is a reconnection after an unexpected disconnect
-            if wasDisconnected && !wasManualDisconnect {
+            
+            // Reset manual disconnect flag on successful connection
+            wasManualDisconnect = false
+            
+            // Check if this is a reconnection after a disconnect
+            if wasDisconnected {
                 if isDebug {
-                    print("✅ NATS Event: Reconnected after unexpected disconnect")
+                    print("✅ NATS Event: Reconnected after disconnect")
                 }
 
                 // Execute RECONNECTED event listener
@@ -970,39 +984,79 @@ import SwiftMsgpack
                     reconnectedListener.onMessage([:])
                 }
 
-                try await onReconnected()
-                
+                do {
+                    try await onReconnected()
+                } catch {
+                    if isDebug {
+                        print("❌ Error during reconnection: \(error)")
+                    }
+                }
                 wasDisconnected = false  // Reset disconnect flag
             }
 
-        case .disconnected, .closed, .suspended:
+            // Only resend messages if this was an unexpected disconnect // remove this while testing 
+           if wasUnexpectedDisconnect {
+                await resendStoredMessages()
+               wasUnexpectedDisconnect = false
+           }
+
+        case .disconnected:
             isConnected = false
-            wasDisconnected = true  // Set disconnect flag
-            wasUnexpectedDisconnect = (event.kind().rawValue == NatsEvent.disconnected.kind().rawValue)
+            wasDisconnected = true
+            wasUnexpectedDisconnect = true  // Mark as unexpected for message resend
             if isDebug {
-                let eventType = (event.kind().rawValue == NatsEvent.disconnected.kind().rawValue) ? "Unexpected disconnection" : "Connection closed unexpectedly"
-                print("⚠️ NATS Event: \(eventType)")
+                print("⚠️ NATS Event: Unexpected disconnection")
             }
-            // Notify listeners about disconnection or closure
+            // Notify listeners about disconnection
             if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
                 listener.onMessage([:])
             }
 
-            // clear stored messages
-            messageStorage.clearStoredMessages()    
+        case .closed:
+            isConnected = false
+            wasDisconnected = true
+            if isDebug {
+                print("⚠️ NATS Event: Connection closed")
+            }
+            // Notify listeners about closure
+            if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
+                listener.onMessage([:])
+            }
+
+            // Only clear stored messages if this was a manual disconnect
+            if wasManualDisconnect {
+                messageStorage.clearStoredMessages()
+            }
+
+        case .suspended:
+            isConnected = false
+            wasDisconnected = true
+            wasUnexpectedDisconnect = true  // Mark as unexpected for message resend
+            if isDebug {
+                print("⚠️ NATS Event: Connection suspended")
+            }
+            // Notify listeners about suspension
+            if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
+                listener.onMessage([:])
+            }
+
+        case .lameDuckMode:
+            isConnected = false
+            wasDisconnected = true
+            wasUnexpectedDisconnect = true  // Mark as unexpected for message resend
+            if isDebug {
+                print("🦆 NATS Event: Server in lame duck mode")
+                print("⚠️ Server-initiated shutdown detected")
+            }
+            // Notify listeners about lame duck mode
+            if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
+                listener.onMessage([:])
+            }
 
         case .error(let error):
             if isDebug {
                 print("❌ NATS Event: Error occurred - \(error)")
             }
-
-        case .lameDuckMode:
-            if isDebug {
-                print("🦆 NATS Event: Server in lame duck mode")
-                print("⚠️ Server-initiated shutdown detected")
-            }
-            wasUnexpectedDisconnect = false
-            wasDisconnected = true  
         }
     }
 
@@ -1039,14 +1093,17 @@ import SwiftMsgpack
 
         let consumerConfig = ConsumerConfig(
             name: consumerName,
-            deliverPolicy: .new,
-            ackPolicy: .explicit,
+            deliverPolicy: .all,
+            maxDeliver: 3,
             filterSubject: finalTopic,
             replayPolicy: .instant
         )
 
         let consumer = try await js.createOrUpdateConsumer(stream: streamName, cfg: consumerConfig)
         activeConsumers.insert(topic)  // Add to active consumers
+        if isDebug {
+            print("✅ Created/Updated consumer for topic: \(topic) with deliverPolicy: .all")
+        }
         return consumer
     }
 
