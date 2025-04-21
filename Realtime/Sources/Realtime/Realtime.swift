@@ -1,217 +1,880 @@
 // The Swift Programming Language
 // https://docs.swift.org/swift-book
 
-import Foundation
-@preconcurrency import Nats
 import Dispatch
+import Foundation
+@preconcurrency import JetStream
+@preconcurrency import Nats
 import SwiftMsgpack
-
-/// SDK Topics for internal events
-public enum SDKTopic {
-    public static let CONNECTED = "sdk.connected"
-    public static let DISCONNECTED = "sdk.disconnected"
-    public static let RECONNECTING = "sdk.reconnecting"
-    public static let RECONNECTED = "sdk.reconnected"
-    public static let MESSAGE_RESEND = "sdk.message_resend"
-}
-
-/// Connection event arguments
-public enum ConnectionEvent: String {
-    case RECONNECTING
-    case RECONNECTED
-    case DISCONNECTED
-}
-
-/// Protocol for receiving messages from the Realtime service
-public protocol MessageListener {
-    func onMessage(_ message: [String: Any])
-}
 
 @preconcurrency public final class Realtime: @unchecked Sendable {
     // MARK: - Properties
-    
+
+    var jetStream: JetStreamContext?
     var natsConnection: NatsClient
     private var servers: [URL] = []
-    private var apiKey: String?
-    private var secret: String?
+    private let apiKey: String
+    private let secret: String
     private var isConnected = false
     private var credentialsPath: URL?
     private var isDebug: Bool = false
     private var clientId: String
-    private var existingStreams: Set<String> = []
     private var messageStorage: MessageStorage
     private var namespace: String?
     private var isStaging: Bool = false
     private var pendingTopics: Set<String> = []
-    
-    private var messageListeners: [String: MessageListener] = [:]
-    private var subscriptions: [String: NatsSubscription] = [:]
+    private var hash: String?
+
+    private let listenerManager: ListenerManager
     private var messageTasks: [String: Task<Void, Never>] = [:]
-    
-    private var streamSubjects: [String: Set<String>] = [:]
-    private let streamName: String = "default_stream"
-    private let topicPrefix: String = "relay_stream"
-    
+    private var activeConsumers: Set<String> = []  // Track active consumers
+
+    private var isResendingMessages = false
+    private var wasDisconnected = false  // Only used for reconnection logic
+    private var wasUnexpectedDisconnect = false  // Only used for message resend logic
+    private var wasManualDisconnect = false  // Only used for message storage cleanup
+
     // MARK: - Initialization
-    
-    /// Initialize a new Realtime instance with configuration
+
+    /// Initialize a new Realtime instance with authentication
+    /// - Parameters:
+    ///   - apiKey: The API key for authentication
+    ///   - secret: The secret key for authentication
+    /// - Throws: RelayError.invalidCredentials if credentials are invalid
+    public init(apiKey: String, secret: String) throws {
+        self.apiKey = apiKey
+        self.secret = secret
+        self.clientId = "ios_\(UUID().uuidString)"
+        self.messageStorage = MessageStorage()
+        self.listenerManager = ListenerManager()
+
+        // Configure NATS connection with required settings
+        let options = NatsClientOptions()
+            .maxReconnects(1200)
+            .reconnectWait(1000)
+            .token(apiKey) 
+
+        self.natsConnection = options.build()
+        // Don't initialize jetStream here as we need a connected client
+
+        try validateCredentials(apiKey: apiKey, secret: secret)
+    }
+
+    /// Prepare the Realtime instance with configuration
     /// - Parameters:
     ///   - staging: Whether to use staging environment
     ///   - opts: Configuration options including debug mode
-    /// - Throws: RelayError.invalidOptions if options are not provided
-    public init(staging: Bool, opts: [String: Any]) throws {
+    /// - Throws: RelayError.invalidOptions if options are invalid
+    public func prepare(staging: Bool, opts: [String: Any]) throws {
         guard !opts.isEmpty else {
             throw RelayError.invalidOptions("Options must be provided")
         }
-        
+
         self.isDebug = opts["debug"] as? Bool ?? false
-        self.clientId = UUID().uuidString
         self.isStaging = staging
-        self.messageStorage = MessageStorage()
-        
+
         // Configure server URLs based on staging flag
         let baseUrl = staging ? "0.0.0.0" : "api.relay-x.io"
         self.servers = (4221...4226).map { port in
             URL(string: "nats://\(baseUrl):\(port)")!
         }
-        
-        // Configure NATS connection with required settings
-        let options = NatsClientOptions()
-            .urls(servers)
-            .maxReconnects(1200)
-            .reconnectWait(1000)
-        
-        self.natsConnection = options.build()
-    }
-    
-    deinit {
-        // Clean up credentials file
-        if let path = credentialsPath {
-            try? FileManager.default.removeItem(at: path)
-        }
-    }
-    
-    // MARK: - Public Methods
-    
-    /// Set authentication credentials
-    public func setAuth(apiKey: String, secret: String) throws {
-        guard !apiKey.isEmpty else {
-            throw RelayError.invalidCredentials("API key cannot be empty")
-        }
-        
-        guard !secret.isEmpty else {
-            throw RelayError.invalidCredentials("Secret key cannot be empty")
-        }
-        
-        self.apiKey = apiKey
-        self.secret = secret
-        
+
         // Create temporary credentials file with correct NATS format
         let credentialsContent = """
-        -----BEGIN NATS USER JWT-----
-        \(apiKey)
-        ------END NATS USER JWT------
+            -----BEGIN NATS USER JWT-----
+            \(apiKey)
+            ------END NATS USER JWT------
 
-        ************************* IMPORTANT *************************
-        NKEY Seed printed below can be used to sign and prove identity.
-        NKEYs are sensitive and should be treated as secrets.
+            ************************* IMPORTANT *************************
+            NKEY Seed printed below can be used to sign and prove identity.
+            NKEYs are sensitive and should be treated as secrets.
 
-        -----BEGIN USER NKEY SEED-----
-        \(secret)
-        ------END USER NKEY SEED------
+            -----BEGIN USER NKEY SEED-----
+            \(secret)
+            ------END USER NKEY SEED------
 
-        *************************************************************
-        """
-        
+            *************************************************************
+            """
+
         let tempDir = FileManager.default.temporaryDirectory
         let credentialsPath = tempDir.appendingPathComponent("relay_credentials.creds")
         self.credentialsPath = credentialsPath
-        
+
         do {
             try credentialsContent.write(to: credentialsPath, atomically: true, encoding: .utf8)
         } catch {
             print("Failed to create credentials file: \(error)")
         }
-        
+
         // Update NATS connection with credentials
         let options = NatsClientOptions()
             .urls(servers)
             .credentialsFile(credentialsPath)
             .maxReconnects(1200)
             .reconnectWait(1000)
-        
+            .token(apiKey) 
+
         // Rebuild connection with new credentials
         self.natsConnection = options.build()
+        // Don't initialize jetStream here as we need a connected client
     }
-    
-    private func validateAuth() throws {
-        guard apiKey != nil && secret != nil else {
-            throw RelayError.invalidCredentials("API key and secret must be set before performing operations")
+
+    deinit {
+        // Clean up credentials file
+        if let path = credentialsPath {
+            try? FileManager.default.removeItem(at: path)
         }
     }
-    
+
+    // MARK: - Public Methods
+
+    private func validateCredentials(apiKey: String?, secret: String?) throws {
+        if apiKey == nil && secret == nil {
+            throw RelayError.invalidCredentials(
+                "Both API key and secret are missing. Please provide both credentials.")
+        } else if apiKey == nil {
+            throw RelayError.invalidCredentials(
+                "API key is missing. Please provide a valid API key.")
+        } else if secret == nil {
+            throw RelayError.invalidCredentials("Secret is missing. Please provide a valid secret.")
+        } else if apiKey!.isEmpty && secret!.isEmpty {
+            throw RelayError.invalidCredentials(
+                "Both API key and secret are empty. Please provide valid credentials.")
+        } else if apiKey!.isEmpty {
+            throw RelayError.invalidCredentials("API key is empty. Please provide a valid API key.")
+        } else if secret!.isEmpty {
+            throw RelayError.invalidCredentials("Secret is empty. Please provide a valid secret.")
+        }
+    }
+
     /// Connect to the NATS server
     public func connect() async throws {
+        try validateCredentials(apiKey: apiKey, secret: secret)
+
         if self.isDebug {
             print("🔄 Connecting and retrieving namespace...")
         }
-        
+
         // Connect to NATS server first
         try await natsConnection.connect()
         self.isConnected = true
-        
+
+            // Initialize JetStream after connection
+            self.jetStream = JetStreamContext(client: natsConnection)
+
         if self.isDebug {
             print("✅ Connected to NATS server")
+            print("✅ JetStream context initialized")
         }
-        
-        // Get namespace
+
+        // Get namespace - this is required for operation
         let namespace = try await getNamespace()
+        guard !namespace.isEmpty else {
+            throw RelayError.invalidNamespace("Namespace cannot be empty")
+        }
         self.namespace = namespace
-        
+
         if self.isDebug {
             print("✅ Retrieved namespace: \(namespace)")
         }
-        
-        // Subscribe to SDK topics
+
+        // Subscribe to topics
         try await subscribeToTopics()
-        
-        // Resend any stored messages after successful connection
-        try await resendStoredMessages()
-        
+
+        // Set connection status
+        isConnected = true
+
+        // Execute CONNECTED event listener if it exists
+        if let connectedListener = listenerManager.getListener(for: SystemEvent.connected.rawValue) {
+            connectedListener.onMessage([:])
+            
+            if isDebug {
+                print("✅ Executed CONNECTED event listener")
+            }
+        }
+
+        // Set up NATS event handlers
+        natsConnection.on([.closed, .connected, .disconnected, .error, .lameDuckMode, .suspended]) {
+            [weak self] natsEvent in
+            guard let self = self else { return }
+
+            Task {
+                await self.handleNatsEvent(natsEvent)
+            }
+        }
+
         if self.isDebug {
             print("✅ Connected and ready")
         }
     }
-    
-    /// Get the namespace for the current user
-    private func getNamespace() async throws -> String {
-        guard let apiKey = self.apiKey else {
-            throw RelayError.invalidCredentials("API key not set")
+
+    /// Close the NATS connection
+    public func close() async throws {
+        guard isConnected else {
+            if isDebug {
+                print("⚠️ Already disconnected")
+            }
+            return
+        }
+
+        // Set manual disconnect flag
+        wasManualDisconnect = true
+
+        // Cancel all message handling tasks
+        for task in messageTasks.values {
+            task.cancel()
+        }
+        messageTasks.removeAll()
+
+        // Clean up all consumers
+        try await cleanupAllConsumers()
+        
+        // Execute DISCONNECTED event listener if it exists
+        if let disconnectedListener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
+            disconnectedListener.onMessage([:])
+            
+            if isDebug {
+                print("✅ Executed DISCONNECTED event listener")
+            }
+        }
+
+        // Clear JetStream context
+        jetStream = nil
+
+        // Close NATS connection
+        try await natsConnection.close()
+
+        // Set connection status
+        isConnected = false
+
+        if isDebug {
+            print("✅ Disconnected from NATS server")
+            print("✅ JetStream context cleared")
+        }
+    }
+
+    /// Publish a message to a topic using JetStream
+    /// - Parameters:
+    ///   - topic: The topic to publish to
+    ///   - message: The message to publish (String, number, JSON object)
+    /// - Throws: TopicValidationError if topic is invalid
+    /// - Throws: RelayError.invalidPayload if message is invalid
+    public func publish(topic: String, message: Any) async throws -> Bool {
+        // Validate topic for publishing
+        try TopicValidator.validate(topic)
+
+        // Prevent publishing to system topics
+        if SystemEvent.reservedTopics.contains(topic) {
+            throw RelayError.invalidTopic("Cannot publish to system topic: \(topic)")
+        }
+
+        // Check for null message
+        if let msg = (message as? String), msg.isEmpty {
+            throw RelayError.invalidPayload("Message cannot be null")
+        }
+
+        // Create message content
+        let messageContent: RealtimeMessage.MessageContent
+        if let string = message as? String {
+            messageContent = .string(string)
+        } else if let number = message as? NSNumber {
+            messageContent = .number(number.doubleValue)
+        } else if let json = message as? [String: Any] {
+            do {
+                let jsonData = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys, .prettyPrinted])
+                messageContent = .json(jsonData)
+            } catch {
+                if isDebug {
+                    print("❌ JSON serialization error: \(error)")
+                }
+                throw RelayError.invalidPayload("Failed to serialize JSON: \(error)")
+            }
+        } else {
+            throw RelayError.invalidPayload(
+                "Message must be a valid JSON object, string, or number")
+        }
+
+        // Create the final message
+        let finalMessage = RealtimeMessage(
+            clientId: clientId,
+            id: UUID().uuidString,
+            room: topic,
+            message: messageContent,
+            start: Int(Date().timeIntervalSince1970)
+        )
+
+        // If not connected, store message locally
+        if !isConnected {
+            let messageDict: [String: Any] = [
+                "client_id": finalMessage.clientId,
+                "id": finalMessage.id,
+                "room": finalMessage.room,
+                "message": message,
+                "start": finalMessage.start,
+            ]
+
+            messageStorage.storeMessage(topic: topic, message: messageDict)
+
+            if isDebug {
+                print("💾 Stored message locally (offline): \(messageDict)")
+            }
+            return false
+        }
+
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
+        }
+
+        // Format topic with hash
+        let finalTopic = try formatTopic(topic)
+      
+        // Encode the message with MessagePack
+        let encoder = MsgPackEncoder()
+        let encodedMessage: Data
+        do {
+            encodedMessage = try encoder.encode(finalMessage)
+        } catch {
+            throw RelayError.invalidPayload("Failed to encode message with MessagePack: \(error)")
+        }
+
+        // Publish using JetStream
+        do {
+            let ackFuture = try await js.publish(finalTopic, message: encodedMessage)
+            let ack = try await ackFuture.wait()
+
+            if isDebug {
+                print("Published message to topic: \(finalTopic)")
+                print("Message payload: \(finalMessage)")
+                print("JetStream ACK: \(ack)")
+            }
+            return true
+        } catch {
+            if isDebug {
+                print("Failed to publish message: \(error)")
+            }
+            return false
+        }
+    }
+
+    /// Subscribe to a topic with a message listener
+    /// - Parameters:
+    ///   - topic: The topic to subscribe to
+    ///   - listener: The message listener interface
+    /// - Throws: TopicValidationError if topic is invalid
+    @discardableResult
+    public func on(topic: String, listener: MessageListener) async throws -> Bool {
+        // Check if listener already exists for this topic 
+        if listenerManager.hasListener(for: topic) {
+            if isDebug {
+                print("⚠️ Listener already exists for topic: \(topic)")
+            }
+            return false
+        }
+
+        let isSystemTopic = SystemEvent.reservedTopics.contains(topic)
+
+        // For system topics, just register the listener and return
+        if isSystemTopic {
+            listenerManager.addListener(listener, for: topic)
+            if isDebug {
+                print("✅ Registered listener for system topic: \(topic)")
+            }
+            return true
+        }
+
+        // For custom topics, validate the topic name
+        try TopicValidator.validate(topic)
+
+        guard isConnected else {
+            pendingTopics.insert(topic)
+            return false
+        }
+
+        // Format topic with hash
+        let finalTopic = try formatTopic(topic)
+
+        // Check if consumer already exists
+        if messageTasks[topic] != nil {
+            if isDebug {
+                print("⚠️ Consumer already exists for topic: \(topic)")
+            }
+            return false
+        }
+
+        // Create or update consumer
+        let consumer = try await createOrUpdateConsumer(for: topic, finalTopic: finalTopic)
+
+        // Store the listener using the manager
+        listenerManager.addListener(listener, for: topic)
+
+        // Start message handling task
+        handleJetStreamMessages(
+            topic: topic,
+            finalTopic: finalTopic,
+            consumer: consumer
+        )
+
+        if isDebug {
+            print("✅ Created/Updated JetStream consumer for topic: \(topic)")
+            print("✅ Listener registered for topic: \(topic)")
+            print("✅ Message handling task started for topic: \(topic)")
+        }
+
+        return true
+    }
+
+    /// Unsubscribe from a topic and clean up associated resources
+    /// - Parameter topic: The topic to unsubscribe from
+    /// - Returns: true if successfully unsubscribed, false otherwise
+    /// - Throws: TopicValidationError if topic is invalid
+    public func off(topic: String) async throws -> Bool {
+        let isSystemTopic = SystemEvent.reservedTopics.contains(topic)
+        
+        // For system topics, just remove the listener
+        if isSystemTopic {
+            listenerManager.removeListener(for: topic)
+            if isDebug {
+                print("✅ Unsubscribed from system topic: \(topic)")
+            }
+            return true
         }
         
+        // For custom topics, validate and handle JetStream cleanup
+        try TopicValidator.validate(topic)
+
+        var success = false
+
+        // Cancel and remove message handling task
+        if let task = messageTasks[topic] {
+            task.cancel()
+            messageTasks.removeValue(forKey: topic)
+            success = true
+        }
+
+        // Remove message listener using the manager
+        listenerManager.removeListener(for: topic)
+
+        // Delete consumer for this topic
+        try await deleteConsumer(for: topic)
+
+        if isDebug {
+            print("✅ Unsubscribed from topic: \(topic)")
+        }
+
+        return success
+    }
+
+    /// Get a list of past messages between a start time and an optional end time
+    /// - Parameters:
+    ///   - topic: The topic to get messages from
+    ///   - start: The start date for message retrieval (required)
+    ///   - end: The end date for message retrieval (optional)
+    ///   - limit: The maximum number of messages to fetch (optional)
+    /// - Returns: An array of message dictionaries
+    /// - Throws: TopicValidationError if topic is invalid
+    /// - Throws: RelayError.invalidDateRange if dates are invalid
+    public func history(
+        topic: String,
+        start: Date,
+        end: Date? = nil,
+        limit: Int? = nil
+    ) async throws -> [[String: Any]] {
+        // Validate topic
+        try TopicValidator.validate(topic)
+
+        // Validate dates
+        guard start <= Date() else {
+            throw RelayError.invalidDate("Start date cannot be in the future")
+        }
+
+        if let end = end {
+            guard start <= end else {
+                throw RelayError.invalidDate("Start date must be before end date")
+            }
+        }
+
+        // Return empty array if not connected
+        guard isConnected else {
+            return []
+        }
+
+        // Get JetStream context
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
+        }
+
+        // Format topic with hash
+        let formattedTopic = try formatTopic(topic)
+
+        // Create unique consumer name for this history request
+        let consumerName = "history_\(UUID().uuidString)"
+
+        // Create consumer configuration
+        let consumerConfig = ConsumerConfig(
+            name: consumerName,
+            deliverPolicy: .byStartTime,
+            optStartTime: ISO8601DateFormatter().string(from: start),
+            ackPolicy: .explicit,
+            filterSubject: formattedTopic,
+            replayPolicy: .instant
+        )
+
+        var messages: [[String: Any]] = []
+        let batchSize = limit ?? 2_000_000
+
+        do {
+            // Create consumer
+            let consumer = try await js.createConsumer(
+                stream: "\(namespace ?? "")_stream", cfg: consumerConfig)
+
+            // Fetch messages with batch size and timeout
+            let fetchResult = try await consumer.fetch(batch: batchSize, expires: 5)
+
+            for try await msg in fetchResult {
+                if let payload = msg.payload {
+                    let decoder = MsgPackDecoder()
+                    if let decodedMessage = try? decoder.decode(RealtimeMessage.self, from: payload)
+                    {
+                        // Check end date if specified
+                        let messageDate = Date(
+                            timeIntervalSince1970: TimeInterval(decodedMessage.start))
+                        if let end = end, messageDate > end {
+                            break
+                        }
+
+                        // Convert message to dictionary format
+                        let messageDict: [String: Any] = [
+                            "client_id": decodedMessage.clientId,
+                            "id": decodedMessage.id,
+                            "room": decodedMessage.room,
+                            "message": try {
+                                switch decodedMessage.message {
+                                case .string(let str): return str
+                                case .number(let number): return number
+                                case .json(let data):
+                                    return try JSONSerialization.jsonObject(with: data)
+                                }
+                            }(),
+                            "start": decodedMessage.start,
+                        ]
+
+                        messages.append(messageDict)
+                        try await msg.ack()
+                    }
+                }
+
+                // Break if we've reached the limit
+                if let limit = limit, messages.count >= limit {
+                    break
+                }
+            }
+
+            // Clean up the consumer after use
+            try? await js.deleteConsumer(stream: "\(namespace ?? "")_stream", name: consumerName)
+
+            if isDebug {
+                print("✅ Retrieved \(messages.count) messages from history")
+            }
+
+        } catch {
+            if isDebug {
+                print("Error fetching message history: \(error)")
+            }
+            throw RelayError.invalidPayload("Failed to fetch message history: \(error)")
+        }
+
+        return messages
+    }
+
+    // MARK: - Privates
+
+    /// Handle incoming JetStream messages for a topic
+    /// - Parameters:
+    ///   - topic: The topic being subscribed to
+    ///   - finalTopic: The formatted topic with namespace
+    ///   - consumer: The JetStream consumer
+    private func handleJetStreamMessages(
+        topic: String,
+        finalTopic: String,
+        consumer: Consumer
+    ) {
+        let task = Task {
+            do {
+                while !Task.isCancelled {
+                    // Fetch messages from the consumer
+                    let fetchResult = try await consumer.fetch(batch: 10, expires: 5)
+
+                    for try await message in fetchResult {
+                        guard let data = message.payload else {
+                            if self.isDebug {
+                                print("Message payload is nil")
+                            }
+                            continue
+                        }
+
+                        do {
+                            // Decode the MessagePack data
+                            let decoder = MsgPackDecoder()
+                            let decodedMessage = try decoder.decode(
+                                RealtimeMessage.self, from: data)
+
+                            // Check if message should be processed
+                            guard decodedMessage.clientId != self.clientId else {
+                                if self.isDebug {
+                                    print("Skipping message from self: \(decodedMessage.id)")
+                                }
+                                // Acknowledge self-messages
+                                try await message.ack(ackType: .ack)
+                                continue
+                            }
+
+                            // Extract only the message content
+                            let messageContent: Any
+                            switch decodedMessage.message {
+                            case .string(let string):
+                                messageContent = string
+                            case .number(let number):
+                                messageContent = number
+                            case .json(let data):
+                                messageContent = try JSONSerialization.jsonObject(with: data)
+                            }
+
+                            // Notify the listener with just the message content on main thread
+                            if let listener = self.listenerManager.getListener(for: topic) {
+                                await MainActor.run {
+                                    listener.onMessage(messageContent)
+                                }
+                                
+                                if self.isDebug {
+                                    print("📥 Delivered message to listener: \(messageContent)")
+                                }
+                            } else if self.isDebug {
+                                print("⚠️ No listener found for topic: \(topic)")
+                            }
+
+                            // Acknowledge the message after successful processing
+                            try await message.ack(ackType: .ack)
+
+                            if self.isDebug {
+                                print("✅ Processed and acknowledged message: \(decodedMessage.id)")
+                            }
+                        } catch {
+                            if self.isDebug {
+                                print("Error processing message for topic \(topic): \(error)")
+                            }
+                            // If processing fails, negatively acknowledge the message
+                            try await message.ack(ackType: .nak())
+                        }
+                    }
+                }
+            } catch {
+                if self.isDebug {
+                    print("Error handling messages for topic \(topic): \(error)")
+                }
+                // Clean up resources on error
+                self.messageTasks.removeValue(forKey: topic)
+                self.listenerManager.removeListener(for: topic)
+            }
+        }
+
+        // Store task reference
+        messageTasks[topic] = task
+
+        if isDebug {
+            print("✅ Message handling task started for topic: \(topic)")
+        }
+    }
+
+    /// Subscribe to all pending topics that were initialized before connection
+    private func subscribeToTopics() async throws {
+        guard !pendingTopics.isEmpty else { return }
+
+        var errors: [Error] = []
+
+        for topic in pendingTopics {
+            do {
+                // Format topic with hash
+                let finalTopic = try formatTopic(topic)
+
+                // Skip if consumer already exists
+                if messageTasks[topic] != nil {
+                    if isDebug {
+                        print("⚠️ Consumer already exists for topic: \(topic)")
+                    }
+                    continue
+                }
+
+                do {
+                    guard let js = jetStream else {
+                        throw RelayError.notConnected("JetStream context not initialized")
+                    }
+
+                    // Create a consumer configuration with proper settings
+                    let consumerConfig = ConsumerConfig(
+                        name: "\(topic)_consumer_\(UUID().uuidString)",
+                        deliverPolicy: .new,
+                        ackPolicy: .explicit,
+                        filterSubject: finalTopic,
+                        replayPolicy: .instant
+                    )
+
+                    // Create the consumer
+                    let consumer = try await js.createConsumer(
+                        stream: finalTopic,
+                        cfg: consumerConfig
+                    )
+
+                    // Start message handling task
+                    handleJetStreamMessages(
+                        topic: topic,
+                        finalTopic: finalTopic,
+                        consumer: consumer
+                    )
+
+                    if isDebug {
+                        print("✅ Subscribed to pending topic: \(topic)")
+                    }
+                } catch {
+                    // Only add to errors if it's not a "consumer already exists" error
+                    if !error.localizedDescription.contains("consumer already exists") {
+                        errors.append(error)
+                        if isDebug {
+                            print("Error subscribing to topic \(topic): \(error)")
+                        }
+                        // Clean up on subscription failure
+                        listenerManager.removeListener(for: topic)
+                    } else if isDebug {
+                        print("⚠️ Consumer already exists for topic: \(topic)")
+                    }
+                }
+            } catch {
+                errors.append(error)
+                if isDebug {
+                    print("Error processing topic \(topic): \(error)")
+                }
+            }
+        }
+
+        // Clear pending topics after processing
+        pendingTopics.removeAll()
+
+        // Only throw if we have non-consumer-exists errors
+        let nonConsumerErrors = errors.filter { !$0.localizedDescription.contains("consumer already exists") }
+        if !nonConsumerErrors.isEmpty {
+            throw RelayError.subscriptionFailed("Failed to subscribe to some topics: \(nonConsumerErrors)")
+        }
+    }
+
+    func resendStoredMessages() async {
+        guard !isResendingMessages else { return }
+        isResendingMessages = true
+        
+        defer {
+            isResendingMessages = false
+        }
+        
+        let storedMessages = messageStorage.getStoredMessages()
+        if storedMessages.isEmpty {
+            if isDebug {
+                print("ℹ️ No stored messages to resend")
+            }
+            return
+        }
+        
+        // Notify listeners that we're about to resend messages
+        if let listener = listenerManager.getListener(for: SystemEvent.messageResend.rawValue) {
+            listener.onMessage(["count": storedMessages.count])
+        }
+        
+        for message in storedMessages {
+            var retryCount = 0
+            let maxRetries = 3
+            
+            while retryCount < maxRetries {
+                if let rawMessage = message.message["message"] as? [String: Any] {
+                    do {
+                        let success = try await publish(
+                            topic: message.topic,
+                            message: rawMessage
+                        )
+                        
+                        if success {
+                            if isDebug {
+                                print("✅ Successfully resent message to topic: \(message.topic)")
+                            }
+                            // Remove the message from storage on successful resend
+                            messageStorage.removeMessage(topic: message.topic, messageId: message.message["id"] as? String ?? "")
+                            break // Exit retry loop on success
+                        }
+                        
+                        retryCount += 1
+                        if retryCount < maxRetries {
+                            if isDebug {
+                                print("⚠️ Failed to resend message, attempt \(retryCount)/\(maxRetries)")
+                            }
+                            try await Task.sleep(nanoseconds: 500_000_000) // 500ms delay between retries
+                        }
+                    } catch {
+                        if isDebug {
+                            print("❌ Error during message resend: \(error)")
+                        }
+                        retryCount += 1
+                    }
+                } else {
+                    if isDebug {
+                        print("❌ Invalid message format in storage")
+                    }
+                    break
+                }
+            }
+            
+            if retryCount >= maxRetries {
+                messageStorage.updateMessageStatus(
+                    topic: message.topic,
+                    messageId: message.message["id"] as? String ?? "",
+                    resent: false
+                )
+                if isDebug {
+                    print("❌ Failed to resend message after \(maxRetries) attempts")
+                }
+            }
+            
+            // Add a small delay between messages
+            do {
+                try await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
+            } catch {
+                if isDebug {
+                    print("⚠️ Error during delay between messages: \(error)")
+                }
+            }
+        }
+    }
+
+    // Get the namespace for the current user
+    private func getNamespace() async throws -> String {
         if self.isDebug {
             print("Requesting namespace with API key")
         }
-        
+
         // Try to connect for up to 5 seconds
         for _ in 0..<50 {
             if isConnected {
                 break
             }
-            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            try await Task.sleep(nanoseconds: 100_000_000)  // 100ms
         }
-        
+
         guard isConnected else {
             throw RelayError.notConnected("Failed to connect to NATS server")
         }
-        
+
         // Create request payload
         let request = [
             "api_key": apiKey
         ]
-        
+
         let requestData = try JSONSerialization.data(withJSONObject: request)
-        
+
         do {
             // Request namespace from service with correct subject
             let response = try await natsConnection.request(
@@ -219,27 +882,34 @@ public protocol MessageListener {
                 subject: "accounts.user.get_namespace",
                 timeout: 5.0
             )
-            
+
             guard let responseData = response.payload else {
                 throw RelayError.invalidPayload("Response payload is missing")
             }
-            
+
             if self.isDebug {
                 if let responseStr = String(data: responseData, encoding: .utf8) {
                     print("Namespace response: \(responseStr)")
                 }
             }
-            
-            guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-                  let data = json["data"] as? [String: Any],
-                  let namespace = data["namespace"] as? String else {
-                throw RelayError.invalidPayload("Invalid response format or missing namespace")
+
+            guard
+                let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+                let data = json["data"] as? [String: Any],
+                let namespace = data["namespace"] as? String,
+                let hash = data["hash"] as? String
+            else {
+                throw RelayError.invalidPayload("Invalid response format or missing namespace/hash")
             }
-            
-            if namespace.isEmpty {
-                throw RelayError.invalidNamespace("Namespace cannot be empty")
+
+            if namespace.isEmpty || hash.isEmpty {
+                throw RelayError.invalidNamespace("Namespace and hash cannot be empty")
             }
-            
+
+            // Store both namespace and hash
+            self.namespace = namespace
+            self.hash = hash
+
             return namespace
         } catch {
             if self.isDebug {
@@ -248,824 +918,245 @@ public protocol MessageListener {
             throw RelayError.invalidNamespace("Failed to retrieve namespace: \(error)")
         }
     }
-    
-    /// Create or get a JetStream stream
-    private func createOrGetStream(for topic: String) async throws {
+
+    // Helper method to format topic with hash
+    private func formatTopic(_ topic: String) throws -> String {
+        guard let hash = self.hash else {
+            throw RelayError.invalidNamespace("Hash not available - must be connected first")
+        }
+        return "\(hash).\(topic)"
+    }
+
+    private func onReconnected() async throws {
+        // Only proceed if this was an unexpected disconnect
+        guard wasUnexpectedDisconnect else { return }
+
+        if isDebug {
+            print("✅ Reconnected to NATS server")
+            print("✅ Handling unexpected disconnect...")
+        }
+
+        // Wait for connection to be fully established
+        for _ in 0..<50 { // Wait up to 5 seconds
+            if isConnected {
+                break
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)  // 100ms
+        }
+
         guard isConnected else {
-            throw RelayError.notConnected("Not connected to NATS server")
-        }
-        
-        // Get namespace if not set
-        if namespace == nil {
-            namespace = try await getNamespace()
-        }
-        
-        guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available")
-        }
-        
-        // Format stream name as namespace_stream
-        let streamName = "\(currentNamespace)_stream"
-        
-        if isDebug {
-            print("Checking stream existence: \(streamName)")
-        }
-        
-        // Format the subject for this topic
-        let formattedSubject = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
-        
-        // If stream exists in our cache, check if we need to add the subject
-        if existingStreams.contains(streamName) {
-            // Get stream info to check subjects
-            let streamInfoRequest: [String: Any] = ["name": streamName]
-            let streamInfoResponse = try await natsConnection.request(
-                try JSONSerialization.data(withJSONObject: streamInfoRequest),
-                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.INFO.\(streamName)",
-                timeout: 5.0
-            )
-            
-            if let data = streamInfoResponse.payload,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let config = json["config"] as? [String: Any],
-               var subjects = config["subjects"] as? [String] {
-                
-                // Check if our subject is already included
-                if !subjects.contains(formattedSubject) {
-                    // Add the new subject and ensure uniqueness
-                    subjects.append(formattedSubject)
-                    subjects = Array(Set(subjects)) // Make subjects unique
-                    
-                    // Update stream config with new subjects
-                    let updateConfig: [String: Any] = [
-                        "name": streamName,
-                        "subjects": subjects,
-                        "retention": "limits",
-                        "max_consumers": -1,
-                        "max_msgs": -1,
-                        "max_bytes": -1,
-                        "max_age": 0,
-                        "storage": "file",
-                        "discard": "old",
-                        "num_replicas": 3  // Updated to 3 replicas
-                    ]
-                    
-                    // Update the stream
-                    let updateResponse = try await natsConnection.request(
-                        try JSONSerialization.data(withJSONObject: updateConfig),
-                        subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.UPDATE.\(streamName)"
-                    )
-                    
-                    if isDebug {
-                        if let data = updateResponse.payload,
-                           let str = String(data: data, encoding: .utf8) {
-                            print("Stream update response: \(str)")
-                        }
-                    }
-                }
-            }
-            return
-        }
-        
-        // Create new stream with initial subject
-        let createConfig: [String: Any] = [
-            "name": streamName,
-            "subjects": [formattedSubject],
-            "retention": "limits",
-            "max_consumers": -1,
-            "max_msgs": -1,
-            "max_bytes": -1,
-            "max_age": 0,
-            "storage": "file",
-            "discard": "old",
-            "num_replicas": 3  // Set to 3 replicas for new streams
-        ]
-        
-        let createResponse = try await natsConnection.request(
-            try JSONSerialization.data(withJSONObject: createConfig),
-            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.CREATE.\(streamName)"
-        )
-        
-        if isDebug {
-            if let data = createResponse.payload,
-               let str = String(data: data, encoding: .utf8) {
-                print("Stream creation response: \(str)")
-            }
-        }
-        
-        // Add to existing streams
-        existingStreams.insert(streamName)
-    }
-    
-    /// Update references to ensureStreamExists to use createOrGetStream
-    private func ensureStreamExists(for topic: String) async throws {
-        try await createOrGetStream(for: topic)
-    }
-    
-    /// Disconnect from the NATS server
-    public func disconnect() async throws {
-        try validateAuth()
-        
-        // Cancel all message handling tasks
-        for task in messageTasks.values {
-            task.cancel()
-        }
-        messageTasks.removeAll()
-        
-        try await natsConnection.close()
-        isConnected = false
-        
-        if isDebug {
-            print("Disconnected from NATS server")
-        }
-    }
-    
-    /// Publish a message to a topic using JetStream
-    /// - Parameters:
-    ///   - topic: The topic to publish to
-    ///   - message: The message to publish (String, number, or JSON)
-    /// - Throws: TopicValidationError if topic is invalid
-    /// - Throws: RelayError.invalidPayload if message is invalid
-    public func publish(topic: String, message: Any) async throws -> Bool {
-        try validateAuth()
-        
-        // Validate topic
-        try TopicValidator.validate(topic)
-        
-        // Encode the message with MessagePack
-        let encoder = MsgPackEncoder()
-        let encodedMessage: Data
-        do {
-            if let jsonData = try? JSONSerialization.data(withJSONObject: message) {
-                encodedMessage = try encoder.encode(jsonData)
-            } else if let stringMessage = message as? String {
-                encodedMessage = try encoder.encode(stringMessage)
-            } else {
-                throw RelayError.invalidPayload("Message must be a valid JSON object or string")
-            }
-        } catch {
-            throw RelayError.invalidPayload("Failed to encode message with MessagePack: \(error)")
-        }
-        
-        // If not connected, store message locally
-        if !isConnected {
-            let finalMessage: [String: Any] = [
-                "client_id": clientId,
-                "id": UUID().uuidString,
-                "room": topic,
-                "message": encodedMessage.base64EncodedString(),
-                "start": Int(Date().timeIntervalSince1970)
-            ]
-            messageStorage.storeMessage(topic: topic, message: finalMessage)
             if isDebug {
-                print("💾 Stored message locally (offline): \(finalMessage)")
+                print("❌ Failed to establish connection for resending messages")
             }
-            return true
-        }
-        
-        // Get namespace if not set
-        if namespace == nil {
-            namespace = try await getNamespace()
-        }
-        
-        guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available")
-        }
-        
-        // Ensure stream exists
-        try await ensureStreamExists(for: topic)
-        
-        // Create the final message format
-        let finalMessage: [String: Any] = [
-            "client_id": clientId,
-            "id": UUID().uuidString,
-            "room": topic,
-            "message": encodedMessage.base64EncodedString(),
-            "start": Int(Date().timeIntervalSince1970)
-        ]
-        
-        let finalData = try JSONSerialization.data(withJSONObject: finalMessage)
-        
-        // Format topic with namespace
-        let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
-        
-        // Publish directly to the formatted topic
-        try await natsConnection.publish(finalData, subject: finalTopic)
-        
-        if isDebug {
-            print("Published message to topic: \(finalTopic)")
-            if let str = String(data: finalData, encoding: .utf8) {
-                print("Message payload: \(str)")
-            }
-        }
-        
-        return true
-    }
-    
-    /// Subscribe to a topic
-    /// - Parameters:
-    ///   - topic: The topic to subscribe to
-    /// - Returns: A Subscription that can be used to receive messages
-    public func subscribe(topic: String) async throws -> Subscription {
-        try validateAuth()
-        try TopicValidator.validate(topic)
-        
-        // Get namespace if not set
-        if namespace == nil {
-            namespace = try await getNamespace()
-        }
-        
-        guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available")
-        }
-        
-        // Ensure stream exists
-        try await ensureStreamExists(for: topic)
-        
-        let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
-        let natsSubscription = try await natsConnection.subscribe(subject: finalTopic)
-        
-        if isDebug {
-            print("Subscribed to topic: \(topic)")
-        }
-        
-        return Subscription(from: natsSubscription)
-    }
-    
-    func resendStoredMessages() async throws {
-        let storedMessages = messageStorage.getStoredMessages()
-        if storedMessages.isEmpty { return }
-        
-        print("📤 Resending \(storedMessages.count) stored messages...")
-        
-        for message in storedMessages {
-            if let messageId = message.message["id"] as? String {
-                // Try to publish the message
-                let success = try await publish(topic: message.topic, message: message.message)
-                if success {
-                    print("✅ Resent message to topic: \(message.topic)")
-                    messageStorage.updateMessageStatus(topic: message.topic, messageId: messageId, resent: true)
-                }
-            }
-        }
-        
-        // Get final message statuses and notify listeners
-        let messageStatuses = messageStorage.getMessageStatuses()
-        if !messageStatuses.isEmpty {
-            let statusMessage: [String: Any] = ["messages": messageStatuses]
-            if let listener = messageListeners[SDKTopic.MESSAGE_RESEND] {
-                listener.onMessage(statusMessage)
-            }
-        }
-        
-        // Clear successfully resent messages
-        messageStorage.clearStoredMessages()
-    }
-    
-    /// Subscribe to a topic with a message listener
-    /// - Parameters:
-    ///   - topic: The topic to subscribe to
-    ///   - listener: The message listener interface
-    /// - Throws: TopicValidationError if topic is invalid
-    public func on(topic: String, listener: MessageListener) async throws {
-        try validateAuth()
-        try TopicValidator.validate(topic)
-        
-        // Store the listener
-        messageListeners[topic] = listener
-        
-        // If not connected, add to pending topics
-        guard isConnected else {
-            pendingTopics.insert(topic)
             return
         }
-        
-        // Handle SDK reconnection event
-        if topic == SDKTopic.RECONNECTED {
-            try await resendStoredMessages()
-        }
-        
-        // Get namespace if not set
+
+        // Initialize JetStream after connection
+        self.jetStream = JetStreamContext(client: natsConnection)
+
+        // Get namespace if needed
         if namespace == nil {
-            namespace = try await getNamespace()
+            _ = try await getNamespace()
         }
-        
-        guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available")
+
+        // Subscribe to topics again
+        try await subscribeToTopics()
+
+        if isDebug {
+            print("✅ Successfully completed reconnection process")
         }
-        
-        // Ensure stream exists
-        try await ensureStreamExists(for: topic)
-        
-        let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
-        
-        // Create subscription if it doesn't exist
-        if subscriptions[topic] == nil {
-            let subscription = try await natsConnection.subscribe(subject: finalTopic)
-            subscriptions[topic] = subscription
+    }
+
+    private func handleNatsEvent(_ event: NatsEvent) async {
+        switch event {
+        case .connected:
+            isConnected = true
+            if isDebug {
+                print("✅ NATS Event: Connected")
+            }
             
-            // Start message handling task
-            let task = Task { [weak self] in
-                guard let self = self else { return }
-                
+            // Reset manual disconnect flag on successful connection
+            wasManualDisconnect = false
+            
+            // Check if this is a reconnection after a disconnect
+            if wasDisconnected {
+                if isDebug {
+                    print("✅ NATS Event: Reconnected after disconnect")
+                }
+
+                // Execute RECONNECTED event listener
+                if let reconnectedListener = listenerManager.getListener(for: SystemEvent.reconnected.rawValue) {
+                    reconnectedListener.onMessage([:])
+                }
+
                 do {
-                    for try await message in subscription {
-                        guard let data = message.payload else {
-                            if self.isDebug {
-                                print("Message payload is nil")
-                            }
-                            continue
-                        }
-                        
-                        do {
-                            // Parse the JSON wrapper
-                            guard let payload = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                                  let listener = self.messageListeners[topic] else {
-                                if self.isDebug {
-                                    print("Invalid message format or no listener found")
-                                }
-                                continue
-                            }
-                            
-                            // Extract and decode the MessagePack content
-                            guard let base64Message = payload["message"] as? String,
-                                  let messageData = Data(base64Encoded: base64Message) else {
-                                if self.isDebug {
-                                    print("Invalid message format: missing or invalid message content")
-                                }
-                                continue
-                            }
-                            
-                            // Decode the MessagePack data
-                            let decoder = MsgPackDecoder()
-                            let messageContent: Any
-                            
-                            do {
-                                // First try to decode as JSON data
-                                if let jsonData = try? decoder.decode(Data.self, from: messageData),
-                                   let jsonContent = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
-                                    // If we have a content field, try to decode it from base64
-                                    if let base64Content = jsonContent["content"] as? String,
-                                       let contentData = Data(base64Encoded: base64Content),
-                                       let decodedData = try? decoder.decode(Data.self, from: contentData),
-                                       let decodedContent = try? JSONSerialization.jsonObject(with: decodedData) {
-                                        // Create final message with decoded content
-                                        var finalMessage = jsonContent
-                                        finalMessage["content"] = decodedContent
-                                        messageContent = finalMessage
-                                    } else {
-                                        messageContent = jsonContent
-                                    }
-                                }
-                                // Then try as a string
-                                else if let stringContent = try? decoder.decode(String.self, from: messageData) {
-                                    messageContent = stringContent
-                                }
-                                else {
-                                    throw RelayError.invalidPayload("Unknown MessagePack content type")
-                                }
-                            } catch {
-                                if self.isDebug {
-                                    print("Failed to decode MessagePack content: \(error)")
-                                }
-                                continue
-                            }
-                            
-                            // Create the final message dictionary
-                            let messageDict: [String: Any] = [
-                                "id": payload["id"] as? String ?? "",
-                                "client_id": payload["client_id"] as? String ?? "",
-                                "timestamp": payload["start"] as? Int ?? 0,
-                                "message": messageContent
-                            ]
-                            
-                            // Notify the listener
-                            listener.onMessage(messageDict)
-                            
-                            if self.isDebug {
-                                print("\n📨 [\(topic)] Received message via listener:")
-                                print("   From: \(messageDict["client_id"] ?? "unknown")")
-                                print("   Content: \(messageContent)")
-                                
-                                if let content = messageContent as? [String: Any] {
-                                    print("\n📦 Decoded Message Content:")
-                                    print("   Type: \(content["type"] ?? "unknown")")
-                                    print("   Content: \(content["content"] ?? "none")")
-                                    if let timestamp = content["timestamp"] {
-                                        print("   Timestamp: \(timestamp)")
-                                    }
-                                }
-                            }
-                        } catch {
-                            if self.isDebug {
-                                print("Error processing message: \(error)")
-                            }
-                        }
-                    }
+                    try await onReconnected()
                 } catch {
-                    if self.isDebug {
-                        print("Error handling messages for topic \(topic): \(error)")
+                    if isDebug {
+                        print("❌ Error during reconnection: \(error)")
                     }
                 }
+                wasDisconnected = false  // Reset disconnect flag
             }
-            
-            // Store task reference
-            messageTasks[topic] = task
-        }
-    }
-    
-    /// Unsubscribe from a topic and clean up associated resources
-    /// - Parameter topic: The topic to unsubscribe from
-    /// - Returns: true if successfully unsubscribed, false otherwise
-    /// - Throws: TopicValidationError if topic is invalid
-    public func off(topic: String) async throws -> Bool {
-        try validateAuth()
-        try TopicValidator.validate(topic)
-        
-        // Cancel and remove message handling task
-        if let task = messageTasks[topic] {
-            task.cancel()
-            messageTasks.removeValue(forKey: topic)
-        }
-        
-        // Remove message listener
-        messageListeners.removeValue(forKey: topic)
-        
-        // Unsubscribe from NATS and remove subscription
-        if let subscription = subscriptions[topic] {
-            try await subscription.unsubscribe()
-            subscriptions.removeValue(forKey: topic)
-            
+
+            // Only resend messages if this was an unexpected disconnect // remove this while testing 
+           if wasUnexpectedDisconnect {
+                await resendStoredMessages()
+               wasUnexpectedDisconnect = false
+           }
+
+        case .disconnected:
+            isConnected = false
+            wasDisconnected = true
+            wasUnexpectedDisconnect = true  // Mark as unexpected for message resend
             if isDebug {
-                print("Unsubscribed from topic: \(topic)")
+                print("⚠️ NATS Event: Unexpected disconnection")
             }
-            return true
+            // Notify listeners about disconnection
+            if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
+                listener.onMessage([:])
+            }
+
+        case .closed:
+            isConnected = false
+            wasDisconnected = true
+            if isDebug {
+                print("⚠️ NATS Event: Connection closed")
+            }
+            // Notify listeners about closure
+            if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
+                listener.onMessage([:])
+            }
+
+            // Only clear stored messages if this was a manual disconnect
+            if wasManualDisconnect {
+                messageStorage.clearStoredMessages()
+            }
+
+        case .suspended:
+            isConnected = false
+            wasDisconnected = true
+            wasUnexpectedDisconnect = true  // Mark as unexpected for message resend
+            if isDebug {
+                print("⚠️ NATS Event: Connection suspended")
+            }
+            // Notify listeners about suspension
+            if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
+                listener.onMessage([:])
+            }
+
+        case .lameDuckMode:
+            isConnected = false
+            wasDisconnected = true
+            wasUnexpectedDisconnect = true  // Mark as unexpected for message resend
+            if isDebug {
+                print("🦆 NATS Event: Server in lame duck mode")
+                print("⚠️ Server-initiated shutdown detected")
+            }
+            // Notify listeners about lame duck mode
+            if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
+                listener.onMessage([:])
+            }
+
+        case .error(let error):
+            if isDebug {
+                print("❌ NATS Event: Error occurred - \(error)")
+            }
         }
-        
-        return false
     }
-    
-    /// Get a list of past messages between a start time and an optional end time
-    /// - Parameters:
-    ///   - topic: The topic to get messages from
-    ///   - startDate: The start date for message retrieval (required)
-    ///   - endDate: The end date for message retrieval (optional)
-    /// - Returns: An array of messages matching the criteria
-    /// - Throws: TopicValidationError if topic is invalid
-    /// - Throws: RelayError.invalidDate if dates are invalid
-    public func history(topic: String, startDate: Date, endDate: Date? = nil) async throws -> [[String: Any]] {
-        // Validate topic
-        try TopicValidator.validate(topic)
-        
-        // Validate start date
-        guard startDate != Date.distantPast else {
-            throw RelayError.invalidDate("Start date cannot be null or invalid")
-        }
-        
-        // Validate end date if provided
-        if let endDate = endDate {
-            guard endDate > startDate else {
-                throw RelayError.invalidDate("End date must be after start date")
-            }
-        }
-        
-        // Return empty array if not connected
-        guard isConnected else {
-            return []
+
+    private func getConsumerName(for topic: String) -> String {
+        return "\(topic)_consumer"
+    }
+
+    private func getConsumer(for topic: String) async throws -> Consumer? {
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
         }
 
-        // Get namespace if not set
-        if namespace == nil {
-            namespace = try await getNamespace()
-        }
-        
         guard let currentNamespace = namespace else {
-            throw RelayError.invalidNamespace("Namespace not available")
+            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
         }
 
-        // Format stream name as namespace_stream
         let streamName = "\(currentNamespace)_stream"
-        
-        if isDebug {
-            print("Using stream name for history: \(streamName)")
+        let consumerName = getConsumerName(for: topic)
+
+        return try? await js.getConsumer(stream: streamName, name: consumerName)
+    }
+
+    private func createOrUpdateConsumer(for topic: String, finalTopic: String) async throws -> Consumer {
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
         }
 
-        // Ensure stream exists before proceeding
-        try await ensureStreamExists(for: topic)
-
-        // Create consumer configuration with minimal settings
-        let consumerConfig: [String: Any] = [
-            "stream_name": streamName,
-            "config": [
-                "name": "history_\(UUID().uuidString)",
-                "filter_subject": NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace),
-                "deliver_policy": "all",
-                "ack_policy": "none",  // Changed back to none for simplicity
-                "max_deliver": 1,
-                "num_replicas": 1
-            ]
-        ]
-        
-        if isDebug {
-            print("Creating consumer with config:", String(data: try JSONSerialization.data(withJSONObject: consumerConfig), encoding: .utf8) ?? "")
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
         }
-        
-        // Create consumer
-        let createResponse = try await natsConnection.request(
-            try JSONSerialization.data(withJSONObject: consumerConfig),
-            subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.CREATE.\(streamName)",
-            timeout: 10.0
+
+        let streamName = "\(currentNamespace)_stream"
+        let consumerName = getConsumerName(for: topic)
+
+        let consumerConfig = ConsumerConfig(
+            name: consumerName,
+            deliverPolicy: .all,
+            maxDeliver: 3,
+            filterSubject: finalTopic,
+            replayPolicy: .instant
         )
-        
+
+        let consumer = try await js.createOrUpdateConsumer(stream: streamName, cfg: consumerConfig)
+        activeConsumers.insert(topic)  // Add to active consumers
         if isDebug {
-            if let data = createResponse.payload,
-               let str = String(data: data, encoding: .utf8) {
-                print("Consumer creation response:", str)
-            }
+            print("✅ Created/Updated consumer for topic: \(topic) with deliverPolicy: .all")
         }
-        
-        guard let payload = createResponse.payload,
-              let response = try? JSONSerialization.jsonObject(with: payload) as? [String: Any],
-              let name = response["name"] as? String else {
-            throw RelayError.invalidResponse
-        }
-        
-        // Request messages in batches
-        var messages: [[String: Any]] = []
-        var hasMore = true
-        var batchCount = 1
-        
-        while hasMore && batchCount <= 10 { // Limit to 10 batches to prevent infinite loops
-            let batchRequest: [String: Any] = [
-                "batch": 10,  // Reduced batch size
-                "no_wait": true
-            ]
-            
-            let batchData = try JSONSerialization.data(withJSONObject: batchRequest)
-            
+        return consumer
+    }
+
+    /// Delete a consumer for a specific topic
+    /// - Parameter topic: The topic to delete the consumer for
+    private func deleteConsumer(for topic: String) async throws {
+        // Skip if consumer is not in active consumers
+        guard activeConsumers.contains(topic) else {
             if isDebug {
-                print("Requesting batch \(batchCount) with config:", String(data: batchData, encoding: .utf8) ?? "")
+                print("ℹ️ Consumer not tracked for topic: \(topic) - skipping deletion")
             }
-            
-            do {
-                let response = try await natsConnection.request(
-                    batchData,
-                    subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.MSG.NEXT.\(streamName).\(name)",
-                    timeout: 2.0  // Reduced timeout for faster failure
-                )
-                
-                if let data = response.payload {
-                    if isDebug {
-                        print("Batch response data:", String(data: data, encoding: .utf8) ?? "no data")
-                    }
-                    
-                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        // Check if this is a "no messages" response
-                        if let description = json["description"] as? String,
-                           description.contains("no messages") {
-                            if isDebug {
-                                print("No more messages available")
-                            }
-                            hasMore = false
-                            continue
-                        }
-                        
-                        // Check message timestamp
-                        if let timestamp = json["start"] as? Int {
-                            let messageDate = Date(timeIntervalSince1970: TimeInterval(timestamp))
-                            let isAfterStart = messageDate >= startDate
-                            let isBeforeEnd = endDate.map { messageDate <= $0 } ?? true
-                            
-                            if isAfterStart && isBeforeEnd {
-                                messages.append(json)
-                                if isDebug {
-                                    print("Added message with timestamp:", timestamp)
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    if isDebug {
-                        print("No payload in batch response")
-                    }
-                    hasMore = false
-                }
-            } catch {
-                if isDebug {
-                    print("Error requesting batch: \(error)")
-                }
-                hasMore = false
-            }
-            
-            batchCount += 1
-            try await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds delay
+            return
         }
-        
-        // Delete the consumer
+
+        guard let js = jetStream else {
+            throw RelayError.notConnected("JetStream context not initialized")
+        }
+
+        guard let currentNamespace = namespace else {
+            throw RelayError.invalidNamespace("Namespace not available - must be connected first")
+        }
+
+        let streamName = "\(currentNamespace)_stream"
+        let consumerName = getConsumerName(for: topic)
+
         do {
-            let deleteResponse = try await natsConnection.request(
-                Data(),
-                subject: "\(NatsConstants.JetStream.apiPrefix).CONSUMER.DELETE.\(streamName).\(name)",
-                timeout: 5.0
-            )
-            
-            if isDebug {
-                if let data = deleteResponse.payload,
-                   let str = String(data: data, encoding: .utf8) {
-                    print("Successfully deleted consumer: \(name)")
-                    print("Delete response:", str)
+            // First check if consumer exists
+            if let _ = try await js.getConsumer(stream: streamName, name: consumerName) {
+                try await js.deleteConsumer(stream: streamName, name: consumerName)
+                activeConsumers.remove(topic)  // Remove from active consumers
+                if isDebug {
+                    print("✅ Deleted consumer for topic: \(topic)")
                 }
+            } else if isDebug {
+                print("ℹ️ Consumer not found for topic: \(topic) - skipping deletion")
             }
         } catch {
             if isDebug {
-                print("Error deleting consumer: \(error)")
+                print("⚠️ Failed to delete consumer for topic \(topic): \(error)")
             }
         }
-        
-        if isDebug {
-            print("Retrieved \(messages.count) messages")
-        }
-        
-        return messages
     }
-    
-    /// Subscribe to all pending topics that were initialized before connection
-    private func subscribeToTopics() async throws {
-        guard !pendingTopics.isEmpty else { return }
-        
-        for topic in pendingTopics {
-            do {
-                // Get namespace if not set
-                if namespace == nil {
-                    namespace = try await getNamespace()
-                }
-                
-                guard let currentNamespace = namespace else {
-                    throw RelayError.invalidNamespace("Namespace not available")
-                }
-                
-                // Ensure stream exists
-                try await ensureStreamExists(for: topic)
-                
-                let finalTopic = NatsConstants.Topics.formatTopic(topic, namespace: currentNamespace)
-                
-                // Create subscription if it doesn't exist
-                if subscriptions[topic] == nil {
-                    let subscription = try await natsConnection.subscribe(subject: finalTopic)
-                    subscriptions[topic] = subscription
-                    
-                    // Start message handling task
-                    let task = Task { [weak self] in
-                        guard let self = self else { return }
-                        
-                        do {
-                            for try await message in subscription {
-                                guard let data = message.payload else {
-                                    if self.isDebug {
-                                        print("Message payload is nil")
-                                    }
-                                    continue
-                                }
-                                
-                                do {
-                                    // Parse the JSON wrapper
-                                    guard let payload = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                                          let listener = self.messageListeners[topic] else {
-                                        if self.isDebug {
-                                            print("Invalid message format or no listener found")
-                                        }
-                                        continue
-                                    }
-                                    
-                                    // Extract and decode the MessagePack content
-                                    guard let base64Message = payload["message"] as? String,
-                                          let messageData = Data(base64Encoded: base64Message) else {
-                                        if self.isDebug {
-                                            print("Invalid message format: missing or invalid message content")
-                                        }
-                                        continue
-                                    }
-                                    
-                                    // Decode the MessagePack data
-                                    let decoder = MsgPackDecoder()
-                                    let messageContent: Any
-                                    
-                                    do {
-                                        // First try to decode as JSON data
-                                        if let jsonData = try? decoder.decode(Data.self, from: messageData),
-                                           let jsonContent = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
-                                            // If we have a content field, try to decode it from base64
-                                            if let base64Content = jsonContent["content"] as? String,
-                                               let contentData = Data(base64Encoded: base64Content),
-                                               let decodedData = try? decoder.decode(Data.self, from: contentData),
-                                               let decodedContent = try? JSONSerialization.jsonObject(with: decodedData) {
-                                                // Create final message with decoded content
-                                                var finalMessage = jsonContent
-                                                finalMessage["content"] = decodedContent
-                                                messageContent = finalMessage
-                                            } else {
-                                                messageContent = jsonContent
-                                            }
-                                        }
-                                        // Then try as a string
-                                        else if let stringContent = try? decoder.decode(String.self, from: messageData) {
-                                            messageContent = stringContent
-                                        }
-                                        else {
-                                            throw RelayError.invalidPayload("Unknown MessagePack content type")
-                                        }
-                                    } catch {
-                                        if self.isDebug {
-                                            print("Failed to decode MessagePack content: \(error)")
-                                        }
-                                        continue
-                                    }
-                                    
-                                    // Create the final message dictionary
-                                    let messageDict: [String: Any] = [
-                                        "id": payload["id"] as? String ?? "",
-                                        "client_id": payload["client_id"] as? String ?? "",
-                                        "timestamp": payload["start"] as? Int ?? 0,
-                                        "message": messageContent
-                                    ]
-                                    
-                                    // Notify the listener
-                                    listener.onMessage(messageDict)
-                                    
-                                    if self.isDebug {
-                                        print("\n📨 [\(topic)] Received message via listener:")
-                                        print("   From: \(messageDict["client_id"] ?? "unknown")")
-                                        print("   Content: \(messageContent)")
-                                        
-                                        if let content = messageContent as? [String: Any] {
-                                            print("\n📦 Decoded Message Content:")
-                                            print("   Type: \(content["type"] ?? "unknown")")
-                                            print("   Content: \(content["content"] ?? "none")")
-                                            if let timestamp = content["timestamp"] {
-                                                print("   Timestamp: \(timestamp)")
-                                            }
-                                        }
-                                    }
-                                } catch {
-                                    if self.isDebug {
-                                        print("Error processing message: \(error)")
-                                    }
-                                }
-                            }
-                        } catch {
-                            if self.isDebug {
-                                print("Error handling messages for topic \(topic): \(error)")
-                            }
-                        }
-                    }
-                    
-                    // Store task reference
-                    messageTasks[topic] = task
-                }
-            } catch {
-                if isDebug {
-                    print("Error subscribing to topic \(topic): \(error)")
-                }
-            }
-        }
-        
-        // Clear pending topics after processing
-        pendingTopics.removeAll()
-    }
-    
-    private func ensureStreamExists() async throws {
-        guard isConnected else {
-            throw RelayError.notConnected("Not connected to NATS server")
-        }
-        
-        let streamConfig: [String: Any] = [
-            "name": streamName,
-            "subjects": ["\(topicPrefix).>"],
-            "retention": "limits",
-            "max_consumers": -1,
-            "max_msgs": 1_000_000,
-            "max_bytes": 1_000_000_000,
-            "max_age": 86400_000_000_000,  // 24 hours in nanoseconds
-            "max_msg_size": 1_000_000,
-            "storage": "file",
-            "num_replicas": 1
-        ]
-        
-        let jsonData = try JSONSerialization.data(withJSONObject: streamConfig)
-        
-        // Try to create the stream first
-        let createResponse = try? await natsConnection.request(
-            jsonData,
-            subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.CREATE.\(streamName)",
-            timeout: 5.0
-        )
-        
-        if createResponse == nil {
-            // If creation fails, try to update the stream
-            _ = try? await natsConnection.request(
-                jsonData,
-                subject: "\(NatsConstants.JetStream.apiPrefix).STREAM.UPDATE.\(streamName)",
-                timeout: 5.0
-            )
+
+    /// Clean up all consumers
+    private func cleanupAllConsumers() async throws {
+        let topicsToCleanup = activeConsumers
+        for topic in topicsToCleanup {
+            try await deleteConsumer(for: topic)
         }
     }
 }
