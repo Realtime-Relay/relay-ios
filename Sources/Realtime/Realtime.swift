@@ -497,9 +497,9 @@ import SwiftMsgpack
             }
         }
 
-        // Return empty array if not connected
+        // Check connection status
         guard isConnected else {
-            return []
+            throw RelayError.notConnected("Cannot retrieve history when not connected")
         }
 
         // Get JetStream context
