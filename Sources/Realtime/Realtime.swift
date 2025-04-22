@@ -52,7 +52,8 @@ import SwiftMsgpack
         let options = NatsClientOptions()
             .maxReconnects(1200)
             .reconnectWait(1000)
-            .token(apiKey) 
+            .token(apiKey)
+            .pingInterval(30) // Increase ping interval to 30 seconds
 
         self.natsConnection = options.build()
         // Don't initialize jetStream here as we need a connected client
@@ -103,16 +104,19 @@ import SwiftMsgpack
         do {
             try credentialsContent.write(to: credentialsPath, atomically: true, encoding: .utf8)
         } catch {
-            print("Failed to create credentials file: \(error)")
+            if isDebug {
+                print("Failed to create credentials file: \(error)")
+            }
         }
 
-        // Update NATS connection with credentials
+        // Update NATS connection with credentials and improved settings
         let options = NatsClientOptions()
             .urls(servers)
             .credentialsFile(credentialsPath)
             .maxReconnects(1200)
             .reconnectWait(1000)
-            .token(apiKey) 
+            .token(apiKey)
+            .pingInterval(30) // Increase ping interval to 30 seconds
 
         // Rebuild connection with new credentials
         self.natsConnection = options.build()
@@ -600,70 +604,62 @@ import SwiftMsgpack
     ) {
         let task = Task {
             do {
-                while !Task.isCancelled {
-                    // Fetch messages from the consumer
-                    let fetchResult = try await consumer.fetch(batch: 10, expires: 5)
+                // Subscribe to the topic using NATS client's native subscription
+                let subscription = try await natsConnection.subscribe(subject: finalTopic)
+                
+                // Process messages from the subscription
+                for try await message in subscription {
+                    guard let data = message.payload else {
+                        if self.isDebug {
+                            print("Message payload is nil")
+                        }
+                        continue
+                    }
 
-                    for try await message in fetchResult {
-                        guard let data = message.payload else {
+                    do {
+                        // Decode the MessagePack data
+                        let decoder = MsgPackDecoder()
+                        let decodedMessage = try decoder.decode(
+                            RealtimeMessage.self, from: data)
+
+                        // Check if message should be processed
+                        guard decodedMessage.clientId != self.clientId else {
                             if self.isDebug {
-                                print("Message payload is nil")
+                                print("Skipping message from self: \(decodedMessage.id)")
                             }
                             continue
                         }
 
-                        do {
-                            // Decode the MessagePack data
-                            let decoder = MsgPackDecoder()
-                            let decodedMessage = try decoder.decode(
-                                RealtimeMessage.self, from: data)
+                        // Extract only the message content
+                        let messageContent: Any
+                        switch decodedMessage.message {
+                        case .string(let string):
+                            messageContent = string
+                        case .number(let number):
+                            messageContent = number
+                        case .json(let data):
+                            messageContent = try JSONSerialization.jsonObject(with: data)
+                        }
 
-                            // Check if message should be processed
-                            guard decodedMessage.clientId != self.clientId else {
-                                if self.isDebug {
-                                    print("Skipping message from self: \(decodedMessage.id)")
-                                }
-                                // Acknowledge self-messages
-                                try await message.ack(ackType: .ack)
-                                continue
-                            }
-
-                            // Extract only the message content
-                            let messageContent: Any
-                            switch decodedMessage.message {
-                            case .string(let string):
-                                messageContent = string
-                            case .number(let number):
-                                messageContent = number
-                            case .json(let data):
-                                messageContent = try JSONSerialization.jsonObject(with: data)
-                            }
-
-                            // Notify the listener with just the message content on main thread
-                            if let listener = self.listenerManager.getListener(for: topic) {
-                                await MainActor.run {
-                                    listener.onMessage(messageContent)
-                                }
-                                
-                                if self.isDebug {
-                                    print("📥 Delivered message to listener: \(messageContent)")
-                                }
-                            } else if self.isDebug {
+                        // Get the listener before processing
+                        guard let listener = self.listenerManager.getListener(for: topic) else {
+                            if self.isDebug {
                                 print("⚠️ No listener found for topic: \(topic)")
                             }
+                            continue
+                        }
 
-                            // Acknowledge the message after successful processing
-                            try await message.ack(ackType: .ack)
-
-                            if self.isDebug {
-                                print("✅ Processed and acknowledged message: \(decodedMessage.id)")
-                            }
-                        } catch {
-                            if self.isDebug {
-                                print("Error processing message for topic \(topic): \(error)")
-                            }
-                            // If processing fails, negatively acknowledge the message
-                            try await message.ack(ackType: .nak())
+                        // Notify the listener with just the message content on main thread
+                        await MainActor.run {
+                            listener.onMessage(messageContent)
+                        }
+                        
+                        if self.isDebug {
+                            print("📥 Delivered message to listener: \(messageContent)")
+                        }
+                    } catch {
+                        if self.isDebug {
+                            print("Error processing message for topic \(topic): \(error)")
                         }
                     }
                 }
