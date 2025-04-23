@@ -53,7 +53,6 @@ import SwiftMsgpack
             .maxReconnects(1200)
             .reconnectWait(1000)
             .token(apiKey)
-            .pingInterval(30) // Increase ping interval to 30 seconds
 
         self.natsConnection = options.build()
         // Don't initialize jetStream here as we need a connected client
@@ -109,14 +108,12 @@ import SwiftMsgpack
             }
         }
 
-        // Update NATS connection with credentials and improved settings
         let options = NatsClientOptions()
             .urls(servers)
             .credentialsFile(credentialsPath)
             .maxReconnects(1200)
             .reconnectWait(1000)
             .token(apiKey)
-            .pingInterval(30) // Increase ping interval to 30 seconds
 
         // Rebuild connection with new credentials
         self.natsConnection = options.build()

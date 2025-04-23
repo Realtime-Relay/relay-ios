@@ -53,6 +53,6 @@ let package = Package(
                 .enableUpcomingFeature("ImplicitOpenExistentials"),
                 .enableUpcomingFeature("StrictConcurrency"),
             ]
-        ),
+        )
     ]
 )
