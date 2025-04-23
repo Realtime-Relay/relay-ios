@@ -202,7 +202,7 @@
 			mainGroup = 342F951B2DB809CA00883780;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				342F954E2DB80A1900883780 /* XCLocalSwiftPackageReference "../Realtime" */,
+				342F956D2DB8B51000883780 /* XCLocalSwiftPackageReference "../../Realtime" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 342F95252DB809CA00883780 /* Products */;
@@ -569,9 +569,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		342F954E2DB80A1900883780 /* XCLocalSwiftPackageReference "../Realtime" */ = {
+		342F956D2DB8B51000883780 /* XCLocalSwiftPackageReference "../../Realtime" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../Realtime;
+			relativePath = ../../Realtime;
 		};
 /* End XCLocalSwiftPackageReference section */
 
