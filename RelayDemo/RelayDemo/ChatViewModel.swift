@@ -27,7 +27,19 @@ class ChatViewModel: ObservableObject {
         
         func onMessage(_ message: Any) {
             Task { @MainActor in
-                if let messageDict = message as? [String: Any] {
+                // Handle different message types
+                if let messageText = message as? String {
+                    // Simple text message
+                    let chatMessage = ChatMessage(
+                        sender: "Other User",
+                        text: messageText,
+                        timestamp: Date().description,
+                        isFromCurrentUser: false
+                    )
+                    viewModel?.messages.append(chatMessage)
+                    viewModel?.shouldScrollToBottom = true
+                } else if let messageDict = message as? [String: Any] {
+                    // Handle dictionary format for backward compatibility
                     let senderId = messageDict["sender_id"] as? String ?? "Unknown"
                     let chatMessage = ChatMessage(
                         sender: messageDict["sender"] as? String ?? "Unknown",
@@ -85,19 +97,36 @@ class ChatViewModel: ObservableObject {
                 end: endDate
             )
             
-            /// Start of Selection
             // Convert history messages to ChatMessage format
             let chatMessages = historyMessages.map { messageDict -> ChatMessage in
-                let messageContent = messageDict["message"] as? [String: Any] ?? [:]
-                let senderId = messageContent["sender_id"] as? String ?? "Unknown"
-                return ChatMessage(
-                    sender: messageContent["sender"] as? String ?? "Unknown",
-                    text: messageContent["text"] as? String ?? "",
-                    timestamp: messageContent["timestamp"] as? String ?? Date().description,
-                    isFromCurrentUser: senderId == clientId
-                )
+                // Handle different message formats
+                if let messageContent = messageDict["message"] as? String {
+                    // Simple text message
+                    return ChatMessage(
+                        sender: "Other User",
+                        text: messageContent,
+                        timestamp: Date().description,
+                        isFromCurrentUser: false
+                    )
+                } else if let messageContent = messageDict["message"] as? [String: Any] {
+                    // Dictionary format
+                    let senderId = messageContent["sender_id"] as? String ?? "Unknown"
+                    return ChatMessage(
+                        sender: messageContent["sender"] as? String ?? "Unknown",
+                        text: messageContent["text"] as? String ?? "",
+                        timestamp: messageContent["timestamp"] as? String ?? Date().description,
+                        isFromCurrentUser: senderId == clientId
+                    )
+                } else {
+                    // Fallback
+                    return ChatMessage(
+                        sender: "Unknown",
+                        text: "Unknown message format",
+                        timestamp: Date().description,
+                        isFromCurrentUser: false
+                    )
+                }
             }
-            /// End of Selection
             
             // Add messages to the array
             messages = chatMessages
@@ -110,15 +139,9 @@ class ChatViewModel: ObservableObject {
     func sendMessage() async {
         guard !currentMessage.isEmpty, isConnected else { return }
         
-        let message: [String: Any] = [
-            "sender": "iOS User",
-            "sender_id": clientId, // Include client ID in message
-            "text": currentMessage,
-            "timestamp": Date().description
-        ]
-        
+        // Publish only the message text
         do {
-            let success = try await realtime?.publish(topic: topic, message: message)
+            let success = try await realtime?.publish(topic: topic, message: currentMessage)
             if success == true {
                 // Add the message to local messages array since SDK will ignore it
                 let chatMessage = ChatMessage(
