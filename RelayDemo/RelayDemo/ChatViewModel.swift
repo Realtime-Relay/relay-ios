@@ -34,23 +34,8 @@ class ChatViewModel: ObservableObject {
                 // Start background task to ensure we can process the message
                 await viewModel?.startBackgroundTask()
                 
-                // Handle different message types
+                // Handle string message
                 if let messageDict = message as? [String: Any], let messageText = messageDict["message"] as? String {
-                    // Extract message from dictionary format
-                    let senderId = messageDict["sender_id"] as? String ?? "Unknown"
-                    let chatMessage = ChatMessage(
-                        sender: messageDict["sender"] as? String ?? "Unknown",
-                        text: messageText,
-                        timestamp: messageDict["timestamp"] as? String ?? Date().description,
-                        isFromCurrentUser: senderId == viewModel?.client_Id
-                    )
-                    viewModel?.messages.append(chatMessage)
-                    viewModel?.shouldScrollToBottom = true
-                    
-                    // Schedule a local notification for the message
-                    await viewModel?.scheduleNotification(for: messageText)
-                } else if let messageText = message as? String {
-                    // Simple text message
                     let chatMessage = ChatMessage(
                         sender: "Other User",
                         text: messageText,
@@ -63,6 +48,7 @@ class ChatViewModel: ObservableObject {
                     // Schedule a local notification for the message
                     await viewModel?.scheduleNotification(for: messageText)
                 }
+                
                 // End background task after processing
                 await viewModel?.endBackgroundTask()
             }
@@ -240,9 +226,9 @@ class ChatViewModel: ObservableObject {
             // Convert history messages to ChatMessage format
             let chatMessages = historyMessages.map { messageDict -> ChatMessage in
                 // Extract message details based on the new model
+                let clientId = messageDict["client_id"] as? String ?? "Unknown"
                 let messageId = messageDict["id"] as? String ?? "Unknown"
                 let room = messageDict["room"] as? String ?? "Unknown"
-                let clientId = messageDict["client_id"] as? String ?? "Unknown"
                 let startTimestamp = messageDict["start"] as? TimeInterval ?? Date().timeIntervalSince1970
                 let messageArray = messageDict["message"] as? [String: Any]
                 let messageContent = messageArray?["message"] as? String ?? "Unknown message format"
@@ -266,13 +252,9 @@ class ChatViewModel: ObservableObject {
     func sendMessage() async {
         guard !currentMessage.isEmpty, isConnected else { return }
         
-        // Create a simple dictionary with just the message
-        let messageDict: [String: Any] = [
-            "message": currentMessage
-        ]
-        
         do {
-            let success = try await realtime?.publish(topic: topic, message: messageDict)
+            // Send the message as a simple string
+            let success = try await realtime?.publish(topic: topic, message: currentMessage)
             if success == true {
                 // Add the message to local messages array since SDK will ignore it
                 let chatMessage = ChatMessage(
