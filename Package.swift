@@ -12,6 +12,7 @@ let package = Package(
     products: [
         .library(name: "Realtime", targets: ["Realtime"]),
         .executable(name: "realtime-cli", targets: ["RealtimeCLI"]),
+        .executable(name: "realtime-ios-cli", targets: ["RealtimeIOSCLI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/nats-io/nats.swift.git", from: "0.4.0"),
@@ -41,6 +42,13 @@ let package = Package(
                 "Realtime",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
+        ),
+        .executableTarget(
+            name: "RealtimeIOSCLI",
+            dependencies: [
+                "Realtime",
+            ],
+            path: "Sources/realtime-ios-cli"
         ),
         .testTarget(
             name: "RealtimeTests",

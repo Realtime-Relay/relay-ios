@@ -1,5 +1,8 @@
 import Foundation
 import Realtime
+import UserNotifications
+import UIKit
+import BackgroundTasks
 
 @MainActor
 class ChatViewModel: ObservableObject {
@@ -13,7 +16,8 @@ class ChatViewModel: ObservableObject {
     private var realtime: Realtime?
     private var topic: String = ""
     private var messageTask: Task<Void, Never>?
-    private var clientId: String = UUID().uuidString // Unique client ID for each instance
+    private var client_Id: String = UUID().uuidString // Unique client ID for each instance
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     
     // Keep a strong reference to the listener
     private var messageListener: ChatMessageListener?
@@ -27,6 +31,9 @@ class ChatViewModel: ObservableObject {
         
         func onMessage(_ message: Any) {
             Task { @MainActor in
+                // Start background task to ensure we can process the message
+                await viewModel?.startBackgroundTask()
+                
                 // Handle different message types
                 if let messageText = message as? String {
                     // Simple text message
@@ -38,6 +45,9 @@ class ChatViewModel: ObservableObject {
                     )
                     viewModel?.messages.append(chatMessage)
                     viewModel?.shouldScrollToBottom = true
+                    
+                    // Schedule a local notification for the message
+                    await viewModel?.scheduleNotification(for: messageText)
                 } else if let messageDict = message as? [String: Any] {
                     // Handle dictionary format for backward compatibility
                     let senderId = messageDict["sender_id"] as? String ?? "Unknown"
@@ -45,12 +55,140 @@ class ChatViewModel: ObservableObject {
                         sender: messageDict["sender"] as? String ?? "Unknown",
                         text: messageDict["text"] as? String ?? "",
                         timestamp: messageDict["timestamp"] as? String ?? Date().description,
-                        isFromCurrentUser: senderId == viewModel?.clientId
+                        isFromCurrentUser: senderId == viewModel?.client_Id
                     )
                     viewModel?.messages.append(chatMessage)
                     viewModel?.shouldScrollToBottom = true
+                    
+                    // Schedule a local notification for the message
+                    if let text = messageDict["text"] as? String {
+                        await viewModel?.scheduleNotification(for: text)
+                    }
                 }
+                
+                // End background task after processing
+                await viewModel?.endBackgroundTask()
             }
+        }
+    }
+    
+    init() {
+        // Request notification permissions
+        requestNotificationPermissions()
+        
+        // Register for app state changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        Task {
+            await endBackgroundTask()
+        }
+    }
+    
+    @objc private func appDidEnterBackground() {
+        // Start a background task when app enters background
+        Task {
+            await startBackgroundTask()
+        }
+        
+        // Ensure we're still connected to receive messages
+        if isConnected {
+            print("App entered background, maintaining connection")
+        }
+    }
+    
+    @objc private func appWillEnterForeground() {
+        // End background task when app comes to foreground
+        Task {
+            await endBackgroundTask()
+        }
+        
+        // Refresh connection if needed
+        if isConnected {
+            Task {
+                await refreshConnection()
+            }
+        }
+    }
+    
+    private func startBackgroundTask() async {
+        // End any existing background task
+        await endBackgroundTask()
+        
+        // Start a new background task
+        backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in
+            Task { @MainActor in
+                await self?.endBackgroundTask()
+            }
+        }
+    }
+    
+    private func endBackgroundTask() async {
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
+    }
+    
+    private func refreshConnection() async {
+        guard let realtime = realtime, isConnected else { return }
+        
+        do {
+            // Check if we need to reconnect
+            if !realtime.isConnected {
+                try await realtime.connect()
+                print("Reconnected to server in foreground")
+            }
+        } catch {
+            print("Error refreshing connection: \(error.localizedDescription)")
+        }
+    }
+    
+    private func requestNotificationPermissions() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+            if granted {
+                print("Notification permission granted")
+            } else if let error = error {
+                print("Error requesting notification permission: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    private func scheduleNotification(for message: String) async {
+        // Schedule notification regardless of app state
+        let content = UNMutableNotificationContent()
+        content.title = "New Message"
+        content.body = message
+        content.sound = .default
+        
+        // Create a unique identifier for this notification
+        let identifier = UUID().uuidString
+        
+        // Create a trigger (immediate)
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        
+        // Create the request
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+        
+        // Add the request to the notification center
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+        } catch {
+            print("Error scheduling notification: \(error.localizedDescription)")
         }
     }
     
@@ -68,6 +206,11 @@ class ChatViewModel: ObservableObject {
             // Create and store the listener
             messageListener = ChatMessageListener(viewModel: self)
             try await realtime?.on(topic: topic, listener: messageListener!)
+            
+            // Configure background message handler
+            if let realtime = realtime {
+                BackgroundMessageHandler.shared.configure(with: realtime, topic: topic, client_Id: client_Id)
+            }
             
             // Load message history
             await loadHistory()
@@ -115,7 +258,7 @@ class ChatViewModel: ObservableObject {
                         sender: messageContent["sender"] as? String ?? "Unknown",
                         text: messageContent["text"] as? String ?? "",
                         timestamp: messageContent["timestamp"] as? String ?? Date().description,
-                        isFromCurrentUser: senderId == clientId
+                        isFromCurrentUser: senderId == client_Id
                     )
                 } else {
                     // Fallback

@@ -15,10 +15,10 @@ import SwiftMsgpack
     private var servers: [URL] = []
     private let apiKey: String
     private let secret: String
-    private var isConnected = false
+    public var isConnected = false
     private var credentialsPath: URL?
     private var isDebug: Bool = false
-    private var clientId: String
+    private var client_Id: String
     private var messageStorage: MessageStorage
     private var namespace: String?
     private var isStaging: Bool = false
@@ -44,7 +44,7 @@ import SwiftMsgpack
     public init(apiKey: String, secret: String) throws {
         self.apiKey = apiKey
         self.secret = secret
-        self.clientId = "ios_\(UUID().uuidString)"
+        self.client_Id = "ios_\(UUID().uuidString)"
         self.messageStorage = MessageStorage()
         self.listenerManager = ListenerManager()
 
@@ -297,17 +297,17 @@ import SwiftMsgpack
 
         // Create the final message
         let finalMessage = RealtimeMessage(
-            clientId: clientId,
+            client_Id: client_Id,
             id: UUID().uuidString,
             room: topic,
             message: messageContent,
-            start: Int(Date().timeIntervalSince1970)
+            start: Int(Date().timeIntervalSince1970 * 1000) // Convert to milliseconds
         )
 
         // If not connected, store message locally
         if !isConnected {
             let messageDict: [String: Any] = [
-                "client_id": finalMessage.clientId,
+                "client_id": finalMessage.client_Id,
                 "id": finalMessage.id,
                 "room": finalMessage.room,
                 "message": message,
@@ -545,7 +545,7 @@ import SwiftMsgpack
 
                         // Convert message to dictionary format
                         let messageDict: [String: Any] = [
-                            "client_id": decodedMessage.clientId,
+                            "client_id": decodedMessage.client_Id,
                             "id": decodedMessage.id,
                             "room": decodedMessage.room,
                             "message": try {
@@ -620,7 +620,7 @@ import SwiftMsgpack
                             RealtimeMessage.self, from: data)
 
                         // Check if message should be processed
-                        guard decodedMessage.clientId != self.clientId else {
+                        guard decodedMessage.client_Id != self.client_Id else {
                             if self.isDebug {
                                 print("Skipping message from self: \(decodedMessage.id)")
                             }
