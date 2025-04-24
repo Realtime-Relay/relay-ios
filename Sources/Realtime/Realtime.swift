@@ -307,7 +307,7 @@ import SwiftMsgpack
         // If not connected, store message locally
         if !isConnected {
             let messageDict: [String: Any] = [
-                "client_id": finalMessage.client_Id,
+                "client_id": finalMessage.client_id,
                 "id": finalMessage.id,
                 "room": finalMessage.room,
                 "message": message,
@@ -507,8 +507,21 @@ import SwiftMsgpack
         // Format topic with hash
         let formattedTopic = try formatTopic(topic)
 
+        if isDebug {
+            print("\n🔍 History Request Details:")
+            print("  Topic: \(topic)")
+            print("  Formatted Topic: \(formattedTopic)")
+            print("  Start Date: \(start)")
+            print("  End Date: \(end?.description ?? "nil")")
+            print("  Limit: \(limit?.description ?? "nil")")
+        }
+
         // Create unique consumer name for this history request
         let consumerName = "history_\(UUID().uuidString)"
+
+        // Convert dates to milliseconds for JetStream
+        let startMillis = Int(start.timeIntervalSince1970 * 1000)
+        let endMillis = end.map { Int($0.timeIntervalSince1970 * 1000) }
 
         // Create consumer configuration
         let consumerConfig = ConsumerConfig(
@@ -528,24 +541,66 @@ import SwiftMsgpack
             let consumer = try await js.createConsumer(
                 stream: "\(namespace ?? "")_stream", cfg: consumerConfig)
 
+            if isDebug {
+                print("\n📥 Fetching messages with batch size: \(batchSize)")
+                print("  Start Time (ms): \(startMillis)")
+                if let end = endMillis {
+                    print("  End Time (ms): \(end)")
+                }
+            }
+
             // Fetch messages with batch size and timeout
             let fetchResult = try await consumer.fetch(batch: batchSize, expires: 5)
 
             for try await msg in fetchResult {
                 if let payload = msg.payload {
+                    if isDebug {
+                        print("\n📦 Raw Message Payload:")
+                        print("  Size: \(payload.count) bytes")
+                        if let payloadString = String(data: payload, encoding: .utf8) {
+                            print("  Content: \(payloadString)")
+                        }
+                    }
+
                     let decoder = MsgPackDecoder()
-                    if let decodedMessage = try? decoder.decode(RealtimeMessage.self, from: payload)
-                    {
+                    
+                    do {
+                        let decodedMessage = try decoder.decode(RealtimeMessage.self, from: payload)
+                        
+                        if isDebug {
+                            print("\n🔍 Decoded Message Details:")
+                            print("  Client ID: \(decodedMessage.client_id)")
+                            print("  Message ID: \(decodedMessage.id)")
+                            print("  Room: \(decodedMessage.room)")
+                            print("  Start Time (ms): \(decodedMessage.start)")
+                            print("  Message Type: \(type(of: decodedMessage.message))")
+                            
+                            // Print message content based on type
+                            switch decodedMessage.message {
+                            case .string(let str):
+                                print("  Content (String): \(str)")
+                            case .number(let num):
+                                print("  Content (Number): \(num)")
+                            case .json(let data):
+                                if let json = try? JSONSerialization.jsonObject(with: data) {
+                                    print("  Content (JSON): \(json)")
+                                }
+                            }
+                        }
+
                         // Check end date if specified
-                        let messageDate = Date(
-                            timeIntervalSince1970: TimeInterval(decodedMessage.start))
-                        if let end = end, messageDate > end {
+                        if let end = endMillis, decodedMessage.start > end {
+                            if isDebug {
+                                print("  ⏭️ Skipping message - after end date")
+                                print("    Message Time: \(decodedMessage.start)")
+                                print("    End Time: \(end)")
+                            }
                             break
                         }
 
                         // Convert message to dictionary format
                         let messageDict: [String: Any] = [
-                            "client_id": decodedMessage.client_Id,
+                            "client_id": decodedMessage.client_id,
                             "id": decodedMessage.id,
                             "room": decodedMessage.room,
                             "message": try {
@@ -559,13 +614,28 @@ import SwiftMsgpack
                             "start": decodedMessage.start,
                         ]
 
+                        if isDebug {
+                            print("\n📝 Final Message Dictionary:")
+                            print("  \(messageDict)")
+                        }
+
                         messages.append(messageDict)
                         try await msg.ack()
+                    } catch {
+                        if isDebug {
+                            print("\n❌ Error decoding message:")
+                            print("  Error: \(error)")
+                            print("  Payload: \(payload)")
+                        }
+                        continue
                     }
                 }
 
                 // Break if we've reached the limit
                 if let limit = limit, messages.count >= limit {
+                    if isDebug {
+                        print("\n⏹️ Reached message limit: \(limit)")
+                    }
                     break
                 }
             }
@@ -574,12 +644,13 @@ import SwiftMsgpack
             try? await js.deleteConsumer(stream: "\(namespace ?? "")_stream", name: consumerName)
 
             if isDebug {
-                print("✅ Retrieved \(messages.count) messages from history")
+                print("\n✅ Retrieved \(messages.count) messages from history")
             }
 
         } catch {
             if isDebug {
-                print("Error fetching message history: \(error)")
+                print("\n❌ Error fetching message history:")
+                print("  Error: \(error)")
             }
             throw RelayError.invalidPayload("Failed to fetch message history: \(error)")
         }
@@ -620,7 +691,7 @@ import SwiftMsgpack
                             RealtimeMessage.self, from: data)
 
                         // Check if message should be processed
-                        guard decodedMessage.client_Id != self.client_Id else {
+                        guard decodedMessage.client_id != self.client_Id else {
                             if self.isDebug {
                                 print("Skipping message from self: \(decodedMessage.id)")
                             }

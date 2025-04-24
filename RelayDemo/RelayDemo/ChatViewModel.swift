@@ -242,33 +242,20 @@ class ChatViewModel: ObservableObject {
             
             // Convert history messages to ChatMessage format
             let chatMessages = historyMessages.map { messageDict -> ChatMessage in
-                // Handle different message formats
-                if let messageContent = messageDict["message"] as? String {
-                    // Simple text message
-                    return ChatMessage(
-                        sender: "Other User",
-                        text: messageContent,
-                        timestamp: Date().description,
-                        isFromCurrentUser: false
-                    )
-                } else if let messageContent = messageDict["message"] as? [String: Any] {
-                    // Dictionary format
-                    let senderId = messageContent["sender_id"] as? String ?? "Unknown"
-                    return ChatMessage(
-                        sender: messageContent["sender"] as? String ?? "Unknown",
-                        text: messageContent["text"] as? String ?? "",
-                        timestamp: messageContent["timestamp"] as? String ?? Date().description,
-                        isFromCurrentUser: senderId == client_Id
-                    )
-                } else {
-                    // Fallback
-                    return ChatMessage(
-                        sender: "Unknown",
-                        text: "Unknown message format",
-                        timestamp: Date().description,
-                        isFromCurrentUser: false
-                    )
-                }
+                // Extract message details based on the new model
+                let messageId = messageDict["id"] as? String ?? "Unknown"
+                let room = messageDict["room"] as? String ?? "Unknown"
+                let clientId = messageDict["client_id"] as? String ?? "Unknown"
+                let startTimestamp = messageDict["start"] as? TimeInterval ?? Date().timeIntervalSince1970
+                let messageArray = messageDict["message"] as? [String: Any]
+                let messageContent = messageArray?["message"] as? String ?? "Unknown message format"
+                
+                return ChatMessage(
+                    sender: clientId == client_Id ? "iOS User" : "Other User",
+                    text: messageContent,
+                    timestamp: Date(timeIntervalSince1970: startTimestamp / 1000).description,
+                    isFromCurrentUser: clientId == client_Id
+                )
             }
             
             // Add messages to the array
@@ -282,9 +269,13 @@ class ChatViewModel: ObservableObject {
     func sendMessage() async {
         guard !currentMessage.isEmpty, isConnected else { return }
         
-        // Publish only the message text
+        // Create a simple dictionary with just the message
+        let messageDict: [String: Any] = [
+            "message": currentMessage
+        ]
+        
         do {
-            let success = try await realtime?.publish(topic: topic, message: currentMessage)
+            let success = try await realtime?.publish(topic: topic, message: messageDict)
             if success == true {
                 // Add the message to local messages array since SDK will ignore it
                 let chatMessage = ChatMessage(
