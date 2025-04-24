@@ -35,10 +35,10 @@ class ChatViewModel: ObservableObject {
                 await viewModel?.startBackgroundTask()
                 
                 // Handle string message
-                if let messageDict = message as? [String: Any], let messageText = messageDict["message"] as? String {
+                let messageText = message
                     let chatMessage = ChatMessage(
                         sender: "Other User",
-                        text: messageText,
+                        text: messageText as! String,
                         timestamp: Date().description,
                         isFromCurrentUser: false
                     )
@@ -46,8 +46,8 @@ class ChatViewModel: ObservableObject {
                     viewModel?.shouldScrollToBottom = true
                     
                     // Schedule a local notification for the message
-                    await viewModel?.scheduleNotification(for: messageText)
-                }
+                await viewModel?.scheduleNotification(for: messageText as! String)
+                
                 
                 // End background task after processing
                 await viewModel?.endBackgroundTask()
@@ -230,8 +230,7 @@ class ChatViewModel: ObservableObject {
                 let messageId = messageDict["id"] as? String ?? "Unknown"
                 let room = messageDict["room"] as? String ?? "Unknown"
                 let startTimestamp = messageDict["start"] as? TimeInterval ?? Date().timeIntervalSince1970
-                let messageArray = messageDict["message"] as? [String: Any]
-                let messageContent = messageArray?["message"] as? String ?? "Unknown message format"
+                let messageContent = messageDict["message"] as? String ?? "Some Thing"
                 
                 return ChatMessage(
                     sender: clientId == client_Id ? "iOS User" : "Other User",
