@@ -35,7 +35,21 @@ class ChatViewModel: ObservableObject {
                 await viewModel?.startBackgroundTask()
                 
                 // Handle different message types
-                if let messageText = message as? String {
+                if let messageDict = message as? [String: Any], let messageText = messageDict["message"] as? String {
+                    // Extract message from dictionary format
+                    let senderId = messageDict["sender_id"] as? String ?? "Unknown"
+                    let chatMessage = ChatMessage(
+                        sender: messageDict["sender"] as? String ?? "Unknown",
+                        text: messageText,
+                        timestamp: messageDict["timestamp"] as? String ?? Date().description,
+                        isFromCurrentUser: senderId == viewModel?.client_Id
+                    )
+                    viewModel?.messages.append(chatMessage)
+                    viewModel?.shouldScrollToBottom = true
+                    
+                    // Schedule a local notification for the message
+                    await viewModel?.scheduleNotification(for: messageText)
+                } else if let messageText = message as? String {
                     // Simple text message
                     let chatMessage = ChatMessage(
                         sender: "Other User",
@@ -48,24 +62,7 @@ class ChatViewModel: ObservableObject {
                     
                     // Schedule a local notification for the message
                     await viewModel?.scheduleNotification(for: messageText)
-                } else if let messageDict = message as? [String: Any] {
-                    // Handle dictionary format for backward compatibility
-                    let senderId = messageDict["sender_id"] as? String ?? "Unknown"
-                    let chatMessage = ChatMessage(
-                        sender: messageDict["sender"] as? String ?? "Unknown",
-                        text: messageDict["text"] as? String ?? "",
-                        timestamp: messageDict["timestamp"] as? String ?? Date().description,
-                        isFromCurrentUser: senderId == viewModel?.client_Id
-                    )
-                    viewModel?.messages.append(chatMessage)
-                    viewModel?.shouldScrollToBottom = true
-                    
-                    // Schedule a local notification for the message
-                    if let text = messageDict["text"] as? String {
-                        await viewModel?.scheduleNotification(for: text)
-                    }
                 }
-                
                 // End background task after processing
                 await viewModel?.endBackgroundTask()
             }
