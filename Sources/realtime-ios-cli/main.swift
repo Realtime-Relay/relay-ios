@@ -1,4 +1,3 @@
-
 import Foundation
 import Realtime
 
@@ -29,6 +28,10 @@ Task {
         } else {
             // Fallback on earlier versions
         }
+        
+        // Run History Tests
+        print("\n=== Running History Tests ===")
+        try await HistoryTest.main()
         
         // Initialize Realtime client for chat demo
         let realtime = try Realtime(

@@ -11,11 +11,13 @@ let package = Package(
     ],
     products: [
         .library(name: "Realtime", targets: ["Realtime"]),
-        .executable(name: "realtime-ios-cli", targets: ["realtime-ios-cli"]),
+        .executable(name: "realtime-cli", targets: ["RealtimeCLI"]),
+        .executable(name: "realtime-ios-cli", targets: ["RealtimeIOSCLI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/nats-io/nats.swift.git", from: "0.4.0"),
         .package(url: "https://github.com/nnabeyang/swift-msgpack", from: "0.7.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.2.0"),
     ],
     targets: [
         .target(
@@ -24,12 +26,41 @@ let package = Package(
                 .product(name: "Nats", package: "nats.swift"),
                 .product(name: "JetStream", package: "nats.swift"),
                 .product(name: "SwiftMsgpack", package: "swift-msgpack"),
-            ]),
+            ],
+            swiftSettings: [
+                .enableUpcomingFeature("BareSlashRegexLiterals"),
+                .enableUpcomingFeature("ConciseMagicFile"),
+                .enableUpcomingFeature("ExistentialAny"),
+                .enableUpcomingFeature("ForwardTrailingClosures"),
+                .enableUpcomingFeature("ImplicitOpenExistentials"),
+                .enableUpcomingFeature("StrictConcurrency"),
+            ]
+        ),
         .executableTarget(
-            name: "realtime-ios-cli",
-            dependencies: ["Realtime"]),
+            name: "RealtimeCLI",
+            dependencies: [
+                "Realtime",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+        .executableTarget(
+            name: "RealtimeIOSCLI",
+            dependencies: [
+                "Realtime",
+            ],
+            path: "Sources/realtime-ios-cli"
+        ),
         .testTarget(
             name: "RealtimeTests",
-            dependencies: ["Realtime"]),
+            dependencies: ["Realtime"],
+            swiftSettings: [
+                .enableUpcomingFeature("BareSlashRegexLiterals"),
+                .enableUpcomingFeature("ConciseMagicFile"),
+                .enableUpcomingFeature("ExistentialAny"),
+                .enableUpcomingFeature("ForwardTrailingClosures"),
+                .enableUpcomingFeature("ImplicitOpenExistentials"),
+                .enableUpcomingFeature("StrictConcurrency"),
+            ]
+        )
     ]
 )
