@@ -7,19 +7,6 @@ A modern, thread-safe Swift package for real-time messaging in iOS and macOS app
 1. Real-time communication made easy—connect, publish, and subscribe with minimal effort.
 2. Automatic reconnection built-in, with a 2-minute retry window for network disruptions.
 3. Message persistence during reconnection ensures no data loss when the client reconnects.
-4. **Real-time Messaging**: Pub/Sub pattern with MessagePack encoding
-5. **Message Encryption**: All messages are encrypted using MessagePack before transmission
-6. **Offline Support**: Automatic message storage and resend
-7. **Message History**: Retrieve past messages with time-based queries
-8. **Thread Safety**: All operations are automatically handled on appropriate threads
-9. **Automatic Connection Management**: Handles connection lifecycle and reconnection
-10. **Main Thread Callbacks**: UI updates are automatically dispatched to the main thread
-11. **Multiple Message Types**: Support for strings, JSON, and custom objects
-12. **Error Handling**: Comprehensive error handling with Swift's Result type
-13. **Async/Await Support**: Modern concurrency support with async/await
-14. **JetStream Integration**: Built-in support for NATS JetStream
-15. **Credential Management**: Secure handling of API keys and secrets
-16. **Debug Mode**: Detailed logging for development and troubleshooting
 
 ## 📋 Requirements
 
@@ -407,7 +394,3 @@ try realtime.prepare(staging: false, opts: ["debug": true])
    - Store API keys and secrets securely
    - Use staging environment for development
    - Implement proper error handling for authentication
-
-## 📄 License
-
-Realtime iOS SDK is available under the MIT license. See the LICENSE file for more info.
