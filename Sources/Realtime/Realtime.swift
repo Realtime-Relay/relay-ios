@@ -34,6 +34,13 @@ import SwiftMsgpack
     private var wasUnexpectedDisconnect = false  // Only used for message resend logic
     private var wasManualDisconnect = false  // Only used for message storage cleanup
 
+    // Latency tracking properties
+    private var latencyHistory: [[String: Any]] = []
+    private var lastLatencyLogTime: Date = Date()
+    private var latencyLogTimer: Timer?
+    private let maxLatencyHistorySize = 100
+    private let latencyLogInterval: TimeInterval = 30 // 30 seconds
+
     // MARK: - Initialization
 
     /// Initialize a new Realtime instance with authentication
@@ -160,8 +167,8 @@ import SwiftMsgpack
         try await natsConnection.connect()
         self.isConnected = true
 
-            // Initialize JetStream after connection
-            self.jetStream = JetStreamContext(client: natsConnection)
+        // Initialize JetStream after connection
+        self.jetStream = JetStreamContext(client: natsConnection)
 
         if self.isDebug {
             print("✅ Connected to NATS server")
@@ -220,6 +227,11 @@ import SwiftMsgpack
 
         // Set manual disconnect flag
         wasManualDisconnect = true
+        
+        // Send any remaining latency data before closing
+        if !latencyHistory.isEmpty {
+            await sendLatencyData()
+        }
 
         // Cancel all message handling tasks
         for task in messageTasks.values {
@@ -716,6 +728,9 @@ import SwiftMsgpack
                             }
                             continue
                         }
+
+                        // Calculate and log latency
+                        await self.logLatency(messageStartTime: decodedMessage.start)
 
                         // Notify the listener with just the message content on main thread
                         await MainActor.run {
@@ -1221,6 +1236,69 @@ import SwiftMsgpack
         let topicsToCleanup = activeConsumers
         for topic in topicsToCleanup {
             try await deleteConsumer(for: topic)
+        }
+    }
+
+    /// Log latency for incoming messages
+    /// - Parameter messageStartTime: The timestamp when the message was sent (in milliseconds)
+    private func logLatency(messageStartTime: Int) async {
+        // Calculate current time in milliseconds
+        let currentTimeMillis = Int(Date().timeIntervalSince1970 * 1000)
+        
+        // Calculate latency (current time - message start time)
+        let latency = currentTimeMillis - messageStartTime
+        
+        // Create latency entry
+        let latencyEntry: [String: Any] = [
+            "latency": latency,
+            "timestamp": currentTimeMillis
+        ]
+        
+        // Add to history
+        latencyHistory.append(latencyEntry)
+        
+        // Check if we need to send the latency data
+        let shouldSendLatencyData = latencyHistory.count >= maxLatencyHistorySize || 
+                                   Date().timeIntervalSince(lastLatencyLogTime) >= latencyLogInterval
+        
+        if shouldSendLatencyData {
+            await sendLatencyData()
+        }
+    }
+    
+    /// Send latency data to the backend
+    private func sendLatencyData() async {
+        // Get timezone in the format "Continent/Country"
+        let timezone = TimeZone.current.identifier
+        
+        // Create payload
+        let payload: [String: Any] = [
+            "timezone": timezone,
+            "history": latencyHistory
+        ]
+        
+        do {
+            // Convert payload to JSON data
+            let payloadData = try JSONSerialization.data(withJSONObject: payload)
+            
+            // Publish to accounts.user.log_latency
+            _ = try await natsConnection.request(
+                payloadData,
+                subject: "accounts.user.log_latency",
+                timeout: 5.0
+            )
+            
+            if isDebug {
+                print("✅ Sent latency data to backend")
+            }
+            
+            // Reset history and update last log time
+            latencyHistory.removeAll()
+            lastLatencyLogTime = Date()
+        } catch {
+            if isDebug {
+                print("❌ Failed to send latency data: \(error)")
+            }
         }
     }
 }
