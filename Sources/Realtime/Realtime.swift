@@ -710,6 +710,9 @@ import SwiftMsgpack
                             continue
                         }
 
+                        // Capture the exact moment the message is received
+                        let messageReceivedTimeMillis = Int(Date().timeIntervalSince1970 * 1000)
+
                         // Extract only the message content
                         let messageContent: Any
                         switch decodedMessage.message {
@@ -729,13 +732,13 @@ import SwiftMsgpack
                             continue
                         }
 
-                        // Calculate and log latency
-                        await self.logLatency(messageStartTime: decodedMessage.start)
-
                         // Notify the listener with just the message content on main thread
                         await MainActor.run {
                             listener.onMessage(messageContent)
                         }
+                        
+                        // Calculate and log latency after message delivery, using the captured receive time
+                        await self.logLatency(messageStartTime: decodedMessage.start, messageReceivedTime: messageReceivedTimeMillis)
                         
                         if self.isDebug {
                             print("📥 Delivered message to listener: \(messageContent)")
@@ -1240,18 +1243,17 @@ import SwiftMsgpack
     }
 
     /// Log latency for incoming messages
-    /// - Parameter messageStartTime: The timestamp when the message was sent (in milliseconds)
-    private func logLatency(messageStartTime: Int) async {
-        // Calculate current time in milliseconds
-        let currentTimeMillis = Int(Date().timeIntervalSince1970 * 1000)
-        
+    /// - Parameters:
+    ///   - messageStartTime: The timestamp when the message was sent (in milliseconds)
+    ///   - messageReceivedTime: The timestamp when the message was received (in milliseconds)
+    private func logLatency(messageStartTime: Int, messageReceivedTime: Int) async {
         // Calculate latency (current time - message start time)
-        let latency = currentTimeMillis - messageStartTime
+        let latency = messageReceivedTime - messageStartTime
         
         // Create latency entry
         let latencyEntry: [String: Any] = [
             "latency": latency,
-            "timestamp": currentTimeMillis
+            "timestamp": messageReceivedTime
         ]
         
         // Add to history
