@@ -696,6 +696,9 @@ import SwiftMsgpack
                         continue
                     }
 
+                    // Capture the exact moment the message is received
+                    let messageReceivedTimeMillis = Int(Date().timeIntervalSince1970 * 1000)
+            
                     do {
                         // Decode the MessagePack data
                         let decoder = MsgPackDecoder()
@@ -709,9 +712,6 @@ import SwiftMsgpack
                             }
                             continue
                         }
-
-                        // Capture the exact moment the message is received
-                        let messageReceivedTimeMillis = Int(Date().timeIntervalSince1970 * 1000)
 
                         // Extract only the message content
                         let messageContent: Any
