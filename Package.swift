@@ -8,7 +8,7 @@ let package = Package(
     platforms: [
         .macOS(.v13),
         .iOS(.v13),
-    ],
+    ], 
     products: [
         .library(name: "Realtime", targets: ["Realtime"]),
         .executable(name: "realtime-cli", targets: ["RealtimeCLI"]),
