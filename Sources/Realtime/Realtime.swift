@@ -82,8 +82,8 @@ import SwiftMsgpack
 
         // Configure server URLs based on staging flag
         let baseUrl = staging ? "0.0.0.0" : "api.relay-x.io"
-        self.servers = (4221...4226).map { port in
-            URL(string: "nats://\(baseUrl):\(port)")!
+        self.servers = (4221...4223).map { port in
+            URL(string: "tls://\(baseUrl):\(port)")!
         }
 
         // Create temporary credentials file with correct NATS format
