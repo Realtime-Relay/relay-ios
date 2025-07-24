@@ -20,7 +20,7 @@ Add Relay to your `Package.swift` file:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Realtime-Relay/relay-ios.git", from: "1.0.0")
+    .package(url: "https://github.com/Realtime-Relay/relay-ios.git", from: "1.0.1")
 ]
 ```
 
