@@ -16,6 +16,7 @@ import SwiftMsgpack
     private let apiKey: String
     private let secret: String
     public var isConnected = false
+    private var isConnectCalled = false
     private var credentialsPath: URL?
     private var isDebug: Bool = false
     private var client_Id: String
@@ -40,6 +41,16 @@ import SwiftMsgpack
     private var latencyLogTimer: Timer?
     private let maxLatencyHistorySize = 100
     private let latencyLogInterval: TimeInterval = 30 // 30 seconds
+    
+    private let reservedSystemTopics = [
+        SystemEvent.connected.rawValue,
+        SystemEvent.disconnected.rawValue,
+        SystemEvent.reconnect.rawValue,
+        SystemEvent.reconnected.rawValue,
+        SystemEvent.reconnecting.rawValue,
+        SystemEvent.reconn_failed.rawValue,
+        SystemEvent.messageResend.rawValue
+        ] as [String]
 
     // MARK: - Initialization
 
@@ -81,7 +92,7 @@ import SwiftMsgpack
         self.isStaging = staging
 
         // Configure server URLs based on staging flag
-        let baseUrl = staging ? "0.0.0.0" : "api.relay-x.io"
+        let baseUrl = staging ? "0.0.0.0" : "api2.relay-x.io"
         self.servers = (4221...4223).map { port in
             URL(string: "tls://\(baseUrl):\(port)")!
         }
@@ -157,6 +168,10 @@ import SwiftMsgpack
 
     /// Connect to the NATS server
     public func connect() async throws {
+        if(isConnectCalled){
+            return
+        }
+        
         try validateCredentials(apiKey: apiKey, secret: secret)
 
         if self.isDebug {
@@ -194,6 +209,9 @@ import SwiftMsgpack
 
         // Execute CONNECTED event listener if it exists
         if let connectedListener = listenerManager.getListener(for: SystemEvent.connected.rawValue) {
+            isConnectCalled = true
+            isConnected = true
+            
             connectedListener.onMessage([:])
             
             if isDebug {
@@ -224,6 +242,8 @@ import SwiftMsgpack
             }
             return
         }
+        
+        isConnectCalled = false
 
         // Set manual disconnect flag
         wasManualDisconnect = true
@@ -508,7 +528,7 @@ import SwiftMsgpack
 
         // Check connection status
         guard isConnected else {
-            throw RelayError.notConnected("Cannot retrieve history when not connected")
+            return []
         }
 
         // Get JetStream context
@@ -529,7 +549,7 @@ import SwiftMsgpack
         }
 
         // Create unique consumer name for this history request
-        let consumerName = "history_\(UUID().uuidString)"
+        let consumerName = "ios_\(UUID().uuidString)_history_consumer"
 
         // Convert dates to milliseconds for JetStream
         let startMillis = Int(start.timeIntervalSince1970 * 1000)
@@ -723,25 +743,34 @@ import SwiftMsgpack
                         case .json(let data):
                             messageContent = try JSONSerialization.jsonObject(with: data)
                         }
-
-                        // Get the listener before processing
-                        guard let listener = self.listenerManager.getListener(for: topic) else {
-                            if self.isDebug {
-                                print("⚠️ No listener found for topic: \(topic)")
+                        
+                        let msgTopic = stripStreamHash(message.subject)
+                        let match = topicPatternMatcher(topic, msgTopic)
+                        
+                        if(match){
+                            // Get the listener before processing
+                            guard let listener = self.listenerManager.getListener(for: topic) else {
+                                if self.isDebug {
+                                    print("⚠️ No listener found for topic: \(topic)")
+                                }
+                                continue
                             }
-                            continue
-                        }
 
-                        // Notify the listener with just the message content on main thread
-                        await MainActor.run {
-                            listener.onMessage(messageContent)
-                        }
-                        
-                        // Calculate and log latency after message delivery, using the captured receive time
-                        await self.logLatency(messageStartTime: decodedMessage.start, messageReceivedTime: messageReceivedTimeMillis)
-                        
-                        if self.isDebug {
-                            print("📥 Delivered message to listener: \(messageContent)")
+                            // Notify the listener with just the message content on main thread
+                            await MainActor.run {
+                                listener.onMessage([
+                                    "id": decodedMessage.id,
+                                    "topic": msgTopic,
+                                    "data": messageContent
+                                ])
+                            }
+                            
+                            // Calculate and log latency after message delivery, using the captured receive time
+                            await self.logLatency(messageStartTime: decodedMessage.start, messageReceivedTime: messageReceivedTimeMillis)
+                            
+                            if self.isDebug {
+                                print("📥 Delivered message to listener: \(messageContent)")
+                            }
                         }
                     } catch {
                         if self.isDebug {
@@ -863,73 +892,42 @@ import SwiftMsgpack
             return
         }
         
-        // Notify listeners that we're about to resend messages
-        if let listener = listenerManager.getListener(for: SystemEvent.messageResend.rawValue) {
-            listener.onMessage(["count": storedMessages.count])
-        }
+        var messagesResent = [] as [[String: Any]]
         
         for message in storedMessages {
-            var retryCount = 0
-            let maxRetries = 3
-            
-            while retryCount < maxRetries {
-                if let rawMessage = message.message["message"] as? [String: Any] {
-                    do {
-                        let success = try await publish(
-                            topic: message.topic,
-                            message: rawMessage
-                        )
-                        
-                        if success {
-                            if isDebug {
-                                print("✅ Successfully resent message to topic: \(message.topic)")
-                            }
-                            // Remove the message from storage on successful resend
-                            messageStorage.removeMessage(topic: message.topic, messageId: message.message["id"] as? String ?? "")
-                            break // Exit retry loop on success
-                        }
-                        
-                        retryCount += 1
-                        if retryCount < maxRetries {
-                            if isDebug {
-                                print("⚠️ Failed to resend message, attempt \(retryCount)/\(maxRetries)")
-                            }
-                            try await Task.sleep(nanoseconds: 500_000_000) // 500ms delay between retries
-                        }
-                    } catch {
-                        if isDebug {
-                            print("❌ Error during message resend: \(error)")
-                        }
-                        retryCount += 1
-                    }
-                } else {
+            if let rawMessage = message.message["message"] as? [String: Any] {
+                do {
+                    let success = try await publish(
+                        topic: message.topic,
+                        message: rawMessage
+                    )
+                    
+                    messagesResent.append([
+                        "topic": message.topic,
+                        "message": rawMessage,
+                        "resent": success
+                    ])
+                } catch {
                     if isDebug {
-                        print("❌ Invalid message format in storage")
+                        print("❌ Error during message resend: \(error)")
                     }
-                    break
                 }
-            }
-            
-            if retryCount >= maxRetries {
-                messageStorage.updateMessageStatus(
-                    topic: message.topic,
-                    messageId: message.message["id"] as? String ?? "",
-                    resent: false
-                )
+            } else {
                 if isDebug {
-                    print("❌ Failed to resend message after \(maxRetries) attempts")
+                    print("❌ Invalid message format in storage")
                 }
-            }
-            
-            // Add a small delay between messages
-            do {
-                try await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
-            } catch {
-                if isDebug {
-                    print("⚠️ Error during delay between messages: \(error)")
-                }
+                break
             }
         }
+        
+        messageStorage.clearStoredMessages()
+        
+        if !messagesResent.isEmpty {
+            if let listener = listenerManager.getListener(for: SystemEvent.messageResend.rawValue) {
+                listener.onMessage(messagesResent)
+            }
+        }
+            
     }
 
     // Get the namespace for the current user
@@ -1008,6 +1006,98 @@ import SwiftMsgpack
         }
         return "\(hash).\(topic)"
     }
+    
+    private func stripStreamHash(_ topic: String) -> String {
+        // unwrap the optional and bail early if it’s nil or empty
+        guard let hash = self.hash, !hash.isEmpty else { return topic }
+
+        let prefix = hash + "."
+        return topic.hasPrefix(prefix)
+            ? String(topic.dropFirst(prefix.count))
+            : topic
+    }
+    
+    func isTopicValid(_ topic: String?) -> Bool {
+        // 1️⃣ Non‑nil, non‑empty string
+        guard let topic, !topic.isEmpty else {
+            return false
+        }
+
+        // 2️⃣ Not in the reserved system list
+        if reservedSystemTopics.contains(topic) {
+            return false
+        }
+
+        // 3️⃣ Regex check — same pattern as the Node version
+        let pattern = #"^(?!.*\$)(?:[A-Za-z0-9_*~-]+(?:\.[A-Za-z0-9_*~-]+)*(?:\.>)?|>)$"#
+
+        guard topic.range(of: pattern,
+                          options: [.regularExpression, .anchored]) != nil,
+              !topic.contains(" ")                       // explicit space check
+        else {
+            return false
+        }
+        
+        return true
+    }
+    
+    func topicPatternMatcher(_ patternA: String, _ patternB: String) -> Bool {
+        let a = patternA.split(separator: ".").map(String.init)
+        let b = patternB.split(separator: ".").map(String.init)
+
+        var i = 0, j = 0                // cursors in A & B
+        var starAi = -1, starAj = -1    // last '>' position in A  & how many tokens of B it has consumed
+        var starBi = -1, starBj = -1    // last '>' position in B  & how many tokens of A it has consumed
+
+        while i < a.count || j < b.count {
+            let tokA: String? = i < a.count ? a[i] : nil
+            let tokB: String? = j < b.count ? b[j] : nil
+
+            // ───────── literal match or single‑token wildcard on either side ─────────
+            let singleWildcard =
+                (tokA == "*" && j < b.count) ||
+                (tokB == "*" && i < a.count)
+
+            if (tokA != nil && tokA == tokB) || singleWildcard {
+                i += 1; j += 1
+                continue
+            }
+
+            // ───────────── multi‑token wildcard ">" — must be final ─────────────
+            if tokA == ">" {
+                if i != a.count - 1        { return false } // '>' not last in A
+                if j >= b.count            { return false } // must consume ≥1 token
+                starAi = i;  i += 1        // remember '>' index, move past it
+                j += 1;    starAj = j      // gobble one token from B
+                continue
+            }
+
+            if tokB == ">" {
+                if j != b.count - 1        { return false } // '>' not last in B
+                if i >= a.count            { return false }
+                starBi = j;  j += 1
+                i += 1;    starBj = i
+                continue
+            }
+
+            // ───────────── back‑track using the last '>' we saw ─────────────
+            if starAi != -1 {
+                starAj += 1
+                j = starAj                 // let A's '>' absorb one more token of B
+                continue
+            }
+            if starBi != -1 {
+                starBj += 1
+                i = starBj                 // let B's '>' absorb one more token of A
+                continue
+            }
+
+            // ─────────────────────────── dead‑end ───────────────────────────
+            return false
+        }
+
+        return true
+    }
 
     private func onReconnected() async throws {
         // Only proceed if this was an unexpected disconnect
@@ -1053,6 +1143,7 @@ import SwiftMsgpack
         switch event {
         case .connected:
             isConnected = true
+            
             if isDebug {
                 print("✅ NATS Event: Connected")
             }
@@ -1067,8 +1158,8 @@ import SwiftMsgpack
                 }
 
                 // Execute RECONNECTED event listener
-                if let reconnectedListener = listenerManager.getListener(for: SystemEvent.reconnected.rawValue) {
-                    reconnectedListener.onMessage([:])
+                if let reconnectedListener = listenerManager.getListener(for: SystemEvent.reconnect.rawValue) {
+                    reconnectedListener.onMessage(SystemEvent.reconnected.rawValue)
                 }
 
                 do {
@@ -1095,13 +1186,15 @@ import SwiftMsgpack
                 print("⚠️ NATS Event: Unexpected disconnection")
             }
             // Notify listeners about disconnection
-            if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
-                listener.onMessage([:])
+            if let listener = listenerManager.getListener(for: SystemEvent.reconnect.rawValue) {
+                listener.onMessage(SystemEvent.reconnecting.rawValue)
             }
 
         case .closed:
             isConnected = false
             wasDisconnected = true
+            isConnectCalled = false
+            
             if isDebug {
                 print("⚠️ NATS Event: Connection closed")
             }
@@ -1115,40 +1208,17 @@ import SwiftMsgpack
                 messageStorage.clearStoredMessages()
             }
 
-        case .suspended:
-            isConnected = false
-            wasDisconnected = true
-            wasUnexpectedDisconnect = true  // Mark as unexpected for message resend
-            if isDebug {
-                print("⚠️ NATS Event: Connection suspended")
-            }
-            // Notify listeners about suspension
-            if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
-                listener.onMessage([:])
-            }
-
-        case .lameDuckMode:
-            isConnected = false
-            wasDisconnected = true
-            wasUnexpectedDisconnect = true  // Mark as unexpected for message resend
-            if isDebug {
-                print("🦆 NATS Event: Server in lame duck mode")
-                print("⚠️ Server-initiated shutdown detected")
-            }
-            // Notify listeners about lame duck mode
-            if let listener = listenerManager.getListener(for: SystemEvent.disconnected.rawValue) {
-                listener.onMessage([:])
-            }
-
         case .error(let error):
             if isDebug {
                 print("❌ NATS Event: Error occurred - \(error)")
             }
+        
+            default : break
         }
     }
 
     private func getConsumerName(for topic: String) -> String {
-        return "\(topic)_consumer"
+        return "ios_\(UUID().uuidString)_consumer"
     }
 
     private func getConsumer(for topic: String) async throws -> Consumer? {
@@ -1275,8 +1345,11 @@ import SwiftMsgpack
         
         // Create payload
         let payload: [String: Any] = [
-            "timezone": timezone,
-            "history": latencyHistory
+            "api_key": self.apiKey,
+            "data": [
+                "timezone": timezone,
+                "history": latencyHistory
+            ]
         ]
         
         do {

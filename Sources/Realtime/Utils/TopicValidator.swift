@@ -33,49 +33,39 @@ public enum TopicValidationError: LocalizedError {
     }
 }
 
+
 public struct TopicValidator {
     public static func validate(
-        _ topic: String, forPublishing: Bool = false, isInternalPublish: Bool = false,
+        _ topic: String?, forPublishing: Bool = false, isInternalPublish: Bool = false,
         isDebug: Bool = false
     ) throws {
-        // Check if topic is empty
-        guard !topic.isEmpty else {
-            if isDebug {
-                print("❌ Invalid topic: empty")
-            }
-            throw TopicValidationError.emptyTopic
+        let reservedSystemTopics = [SystemEvent.connected.rawValue,
+                                    SystemEvent.disconnected.rawValue,
+                                    SystemEvent.reconnect.rawValue,
+                                    SystemEvent.reconnected.rawValue,
+                                    SystemEvent.reconnecting.rawValue,
+                                    SystemEvent.reconn_failed.rawValue,
+                                    SystemEvent.messageResend.rawValue
+        ] as [String]
+        
+        // 1️⃣ Non‑nil, non‑empty string
+        guard let topic, !topic.isEmpty else {
+            throw TopicValidationError.invalidFormat("Invalid Topic")
         }
 
-        // Check for spaces
-        guard !topic.contains(" ") else {
-            if isDebug {
-                print("❌ Invalid topic: contains spaces")
-            }
-            throw TopicValidationError.containsSpaces
+        // 2️⃣ Not in the reserved system list
+        if reservedSystemTopics.contains(topic) {
+            throw TopicValidationError.invalidFormat("Invalid Topic. Cannot be system topic")
         }
 
-        // Check for star character
-        guard !topic.contains("*") else {
-            if isDebug {
-                print("❌ Invalid topic: contains asterisk (*)")
-            }
-            throw TopicValidationError.containsStar
-        }
+        // 3️⃣ Regex check — same pattern as the Node version
+        let pattern = #"^(?!.*\$)(?:[A-Za-z0-9_*~-]+(?:\.[A-Za-z0-9_*~-]+)*(?:\.>)?|>)$"#
 
-        // Check for period character
-        guard !topic.contains(".") else {
-            if isDebug {
-                print("❌ Invalid topic: contains period (.)")
-            }
-            throw TopicValidationError.containsPeriod
-        }
-
-        // Only check system topics for publishing from outside the SDK
-        if forPublishing && !isInternalPublish && SystemEvent.reservedTopics.contains(topic) {
-            if isDebug {
-                print("❌ Invalid topic: cannot publish to system topics")
-            }
-            throw TopicValidationError.systemTopicPublish
+        guard topic.range(of: pattern,
+                          options: [.regularExpression, .anchored]) != nil,
+              !topic.contains(" ")                       // explicit space check
+        else {
+            throw TopicValidationError.invalidFormat("Invalid Topic")
         }
     }
 

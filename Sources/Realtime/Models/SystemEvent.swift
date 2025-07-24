@@ -13,8 +13,10 @@ public enum SystemEvent: String, CaseIterable {
     case connected = "CONNECTED"
     case disconnected = "DISCONNECTED"
     case reconnecting = "RECONNECTING"
-    case reconnected = "RECONNECT"
+    case reconnect = "RECONNECT"
     case messageResend = "MESSAGE_RESEND"
+    case reconnected = "RECONNECTED"
+    case reconn_failed = "RECONN_FAILED"
     
     /// Reserved system topics that cannot be used by clients
     static var reservedTopics: Set<String> {

@@ -130,10 +130,19 @@ class BackgroundMessageHandler {
             self.handler = handler
         }
         
-        func onMessage(_ message: Any) {
+        func onMessage(_ data: Any) {
             Task {
                 // Start background task to ensure we can process the message
                 await handler?.startBackgroundTask()
+                
+                var message: Any
+                
+                switch data {
+                case let dict as [String: Any]:
+                    message = dict["data"]
+                default:
+                    message = data
+                }
                 
                 // Handle different message types
                 if let messageText = message as? String {

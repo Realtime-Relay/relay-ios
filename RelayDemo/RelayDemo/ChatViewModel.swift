@@ -29,10 +29,19 @@ class ChatViewModel: ObservableObject {
             self.viewModel = viewModel
         }
         
-        func onMessage(_ message: Any) {
+        func onMessage(_ data: Any) {
             Task { @MainActor in
                 // Start background task to ensure we can process the message
                 await viewModel?.startBackgroundTask()
+                
+                var message: Any
+                
+                switch data {
+                case let dict as [String: Any]:
+                    message = dict["data"]
+                default:
+                    message = data
+                }
                 
                 // Handle string message
                 let messageText = message
@@ -179,8 +188,8 @@ class ChatViewModel: ObservableObject {
         self.topic = topic
         do {
             // Use provided credentials or default ones
-            let finalApiKey = apiKey ?? "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJhdWQiOiJOQVRTIiwibmFtZSI6IklPUyBEZXYiLCJzdWIiOiJVQU9STjRWQkNXQzJORU1FVkpFWUY3VERIUVdYTUNLTExTWExNTjZRTjRBVU1WUElDSVJOSEpJRyIsIm5hdHMiOnsiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJzdWJzIjotMSwicHViIjp7ImRlbnkiOlsiPiJdfSwic3ViIjp7ImRlbnkiOlsiPiJdfSwib3JnX2RhdGEiOnsib3JnYW5pemF0aW9uIjoicmVsYXktaW50ZXJuYWwiLCJwcm9qZWN0IjoiSU9TIERldiJ9LCJpc3N1ZXJfYWNjb3VudCI6IkFDWklKWkNJWFNTVVU1NVlFR01QMjM2TUpJMkNSSVJGRkdJRDRKVlE2V1FZWlVXS08yVTdZNEJCIiwidHlwZSI6InVzZXIiLCJ2ZXJzaW9uIjoyfSwiaXNzIjoiQUNaSUpaQ0lYU1NVVTU1WUVHTVAyMzZNSkkyQ1JJUkZGR0lENEpWUTZXUVlaVVdLTzJVN1k0QkIiLCJpYXQiOjE3NDUwNTE2NjcsImp0aSI6IllVMG50TXFNcHhwWFNWbUp0OUJDazhhV0dxd0NwYytVQ0xwa05lWVBVcDNNRTNQWDBRcUJ2ZjBBbVJXMVRDamEvdTg2emIrYUVzSHVKUFNmOFB2SXJnPT0ifQ._LtZJnTADAnz3N6U76OaA-HCYq-XxckChk1WlHi_oZXfYP2vqcGIiNDFSQ-XpfjUTfKtXEuzcf_BDq54nSEMAA"
-            let finalSecret = secret ?? "SUAPWRWRITWYL4YP7B5ZHU3W2G2ZPYJ47IN4UWNHLMFTSIJEOMQJWWSWGY"
+            let finalApiKey = apiKey ?? APIKeys.API_KEY
+            let finalSecret = secret ?? APIKeys.SECRET
             
             realtime = try Realtime(apiKey: finalApiKey, secret: finalSecret)
             try realtime?.prepare(staging: false, opts: ["debug": true])
