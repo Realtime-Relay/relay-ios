@@ -92,7 +92,7 @@ import SwiftMsgpack
         self.isStaging = staging
 
         // Configure server URLs based on staging flag
-        let baseUrl = staging ? "0.0.0.0" : "api2.relay-x.io"
+        let baseUrl = staging ? "0.0.0.0" : "api.relay-x.io"
         self.servers = (4221...4223).map { port in
             URL(string: "tls://\(baseUrl):\(port)")!
         }
