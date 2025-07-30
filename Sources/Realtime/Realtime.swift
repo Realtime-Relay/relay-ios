@@ -632,9 +632,8 @@ import SwiftMsgpack
 
                         // Convert message to dictionary format
                         let messageDict: [String: Any] = [
-                            "client_id": decodedMessage.client_id,
                             "id": decodedMessage.id,
-                            "room": decodedMessage.room,
+                            "topic": decodedMessage.room,
                             "message": try {
                                 switch decodedMessage.message {
                                 case .string(let str): return str
@@ -643,7 +642,7 @@ import SwiftMsgpack
                                     return try JSONSerialization.jsonObject(with: data)
                                 }
                             }(),
-                            "start": decodedMessage.start,
+                            "timestamp": decodedMessage.start,
                         ]
 
                         if isDebug {
