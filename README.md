@@ -1,6 +1,6 @@
 # Relay iOS Library
-
-A modern, thread-safe Swift package for real-time messaging in iOS and macOS applications. Built on top of NATS and JetStream, this SDK provides a clean, Swift-native API for real-time communication with support for offline messaging, message history, and more.
+![License](https://img.shields.io/badge/Apache_2.0-green?label=License)<br>
+A powerful library for integrating real-time communication into your software stack, powered by the Relay Network.
 
 ## Documenation
 For more documention visit [docs.relay-x.io](https://docs.relay-x.io)
